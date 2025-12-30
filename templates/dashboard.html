@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor Energía Pro</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+    <style>
+        body { background-color: #f0f2f5; font-family: sans-serif; padding-bottom: 50px;}
+        .card-rele { transition: transform 0.2s; border: none; }
+        .card-rele:active { transform: scale(0.98); }
+        .indicador { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .on { background-color: #28a745; box-shadow: 0 0 8px #28a745; }
+        .off { background-color: #dc3545; opacity: 0.5; }
+        .btn-grupo { min-width: 45%; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark bg-primary mb-3 shadow-sm sticky-top">
+    <div class="container-fluid">
+        <span class="navbar-brand fw-bold">⚡ Control Maestro</span>
+        <button class="btn btn-sm btn-light text-primary fw-bold" data-bs-toggle="modal" data-bs-target="#modalGrupo">
+            + Nuevo Grupo
+        </button>
+    </div>
+</nav>
+
+<div class="container">
+
+    <div class="card shadow-sm mb-4 border-primary">
+        <div class="card-body text-center">
+            <h5 class="card-title text-primary mb-3">🏠 Control General de la Casa</h5>
+            <div class="d-flex justify-content-center gap-3">
+                <button onclick="controlGlobal(1)" class="btn btn-success btn-lg px-4">⚡ ENCENDER TODO</button>
+                <button onclick="controlGlobal(0)" class="btn btn-danger btn-lg px-4">🛑 APAGAR TODO</button>
+            </div>
+        </div>
+    </div>
+
+    <h5 class="text-muted mb-2">📂 Grupos / Habitaciones</h5>
+    <div class="row mb-4" id="contenedor-grupos">
+        <div class="col-12 text-muted small">No hay grupos creados. Usa el botón "+ Nuevo Grupo" arriba.</div>
+    </div>
+
+    <h5 class="text-muted mb-2">🔌 Dispositivos Individuales</h5>
+    <div class="row" id="contenedor-reles">
+        <div class="col-12 text-center py-4">Cargando sistema...</div>
+    </div>
+    
+    <div class="mt-4">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h6 class="text-muted">Consumo Reciente</h6>
+                <canvas id="graficoEnergia" height="60"></canvas>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<div class="modal fade" id="modalGrupo" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Crear Nuevo Grupo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Nombre del Grupo (Ej: Sala, Cocina)</label>
+                    <input type="text" id="inputNombreGrupo" class="form-control" placeholder="Nombre...">
+                </div>
+                <label class="form-label">Selecciona los dispositivos:</label>
+                <div id="lista-seleccion-reles" class="list-group">
+                    </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" onclick="guardarGrupo()">Guardar Grupo</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart.min.js') }}"></script>
+
+<script>
+    // --- VARIABLES GLOBALES ---
+    let todosLosReles = []; 
+    const modalElement = new bootstrap.Modal(document.getElementById('modalGrupo'));
+
+    // --- GRÁFICO ---
+    const ctx = document.getElementById('graficoEnergia').getContext('2d');
+    const chartEnergia = new Chart(ctx, {
+        type: 'line',
+        data: { labels: [], datasets: [{ label: 'kWh', data: [], borderColor: '#0d6efd', tension: 0.3 }] },
+        options: { responsive: true, scales: { y: { beginAtZero: true } } }
+    });
+
+    // --- LÓGICA PRINCIPAL ---
+    async function actualizarDatos() {
+        try {
+            const res = await fetch('/api/datos');
+            const data = await res.json();
+            
+            todosLosReles = data.reles; // Guardamos para usar en el Modal
+
+            // 1. Actualizar Gráfico
+            chartEnergia.data.labels = data.grafico.map(i => new Date(i[0] || i.fecha).toLocaleTimeString());
+            chartEnergia.data.datasets[0].data = data.grafico.map(i => i[1] || i.valor_kwh);
+            chartEnergia.update('none');
+
+            // 2. Renderizar GRUPOS
+            const divGrupos = document.getElementById('contenedor-grupos');
+            if(data.grupos.length > 0) {
+                divGrupos.innerHTML = '';
+                // Filtramos el grupo "General" o "Default" si existe con ID=0, usualmente no se muestra
+                data.grupos.forEach(grupo => {
+                    if(grupo.id === 0) return; // Saltamos grupo default si existe
+                    
+                    divGrupos.innerHTML += `
+                    <div class="col-md-6 mb-3">
+                        <div class="card shadow-sm border-info">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h5 class="card-title mb-0">📂 ${grupo.nombre}</h5>
+                                    <button class="btn btn-sm btn-outline-danger" onclick="eliminarGrupo(${grupo.id})">🗑️</button>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-success flex-fill" onclick="controlGrupo(${grupo.id}, 1)">ON</button>
+                                    <button class="btn btn-secondary flex-fill" onclick="controlGrupo(${grupo.id}, 0)">OFF</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+                });
+            }
+
+            // 3. Renderizar RELÉS INDIVIDUALES
+            const divReles = document.getElementById('contenedor-reles');
+            const listaModal = document.getElementById('lista-seleccion-reles');
+            divReles.innerHTML = '';
+            listaModal.innerHTML = ''; // Limpiamos la lista del modal también
+
+            data.reles.forEach(rele => {
+                const esON = rele.estado === 1;
+                
+                // Tarjeta Dashboard
+                divReles.innerHTML += `
+                <div class="col-6 col-md-3 mb-3">
+                    <div class="card card-rele shadow-sm h-100">
+                        <div class="card-body text-center p-2">
+                            <div class="fw-bold text-truncate mb-1" onclick="editarNombre(${rele.id}, '${rele.nombre}')">${rele.nombre}</div>
+                            <div class="small text-muted mb-2"><span class="indicador ${esON?'on':'off'}"></span>Pin ${rele.pin_gpio}</div>
+                            <button onclick="toggleRele(${rele.id})" class="btn w-100 btn-sm ${esON?'btn-success':'btn-outline-secondary'}">${esON?'ON':'OFF'}</button>
+                            <div class="text-muted" style="font-size: 10px; margin-top:5px">Grupo: ${obtenerNombreGrupo(rele.id_grupo, data.grupos)}</div>
+                        </div>
+                    </div>
+                </div>`;
+
+                // Checkbox para el Modal de Crear Grupo
+                listaModal.innerHTML += `
+                <label class="list-group-item">
+                    <input class="form-check-input me-1" type="checkbox" value="${rele.id}">
+                    ${rele.nombre} (Actual: ${obtenerNombreGrupo(rele.id_grupo, data.grupos)})
+                </label>`;
+            });
+
+        } catch (e) { console.error(e); }
+    }
+
+    // --- FUNCIONES DE ACCIÓN ---
+
+    async function controlGlobal(estado) {
+        if(!confirm(estado === 1 ? "¿Encender TODO?" : "¿Apagar TODO?")) return;
+        await enviarApi({ accion: 'global', estado: estado });
+    }
+
+    async function controlGrupo(idGrupo, estado) {
+        await enviarApi({ accion: 'grupo', id_grupo: idGrupo, estado: estado });
+    }
+
+    async function toggleRele(id) {
+        await enviarApi({ accion: 'toggle', id: id });
+    }
+
+    async function editarNombre(id, nombreActual) {
+        let nuevo = prompt("Nombre:", nombreActual);
+        if (nuevo) await enviarApi({ accion: 'editar_nombre', id: id, nombre: nuevo });
+    }
+
+    async function eliminarGrupo(id) {
+        if(confirm("¿Borrar grupo? Los relés quedarán sin grupo.")) {
+            await enviarApi({ accion: 'eliminar_grupo', id_grupo: id });
+        }
+    }
+
+    async function guardarGrupo() {
+        const nombre = document.getElementById('inputNombreGrupo').value;
+        if(!nombre) return alert("Escribe un nombre");
+
+        // Obtener IDs seleccionados
+        const checkboxes = document.querySelectorAll('#lista-seleccion-reles input:checked');
+        let ids = [];
+        checkboxes.forEach(chk => ids.push(parseInt(chk.value)));
+
+        if(ids.length === 0) return alert("Selecciona al menos un dispositivo");
+
+        await enviarApi({ accion: 'crear_grupo', nombre: nombre, reles: ids });
+        
+        // Reset y cerrar modal
+        document.getElementById('inputNombreGrupo').value = '';
+        modalElement.hide();
+    }
+
+    // Helper
+    async function enviarApi(data) {
+        await fetch('/api/control', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        actualizarDatos();
+    }
+
+    function obtenerNombreGrupo(id, listaGrupos) {
+        if(!id || id === 0) return "Ninguno";
+        const g = listaGrupos.find(x => x.id === id);
+        return g ? g.nombre : "Desconocido";
+    }
+
+    setInterval(actualizarDatos, 2000);
+    actualizarDatos();
+
+</script>
+</body>
+</html>
