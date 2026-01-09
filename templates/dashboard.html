@@ -12,7 +12,6 @@
         .prioridad-alta { border-left: 5px solid #28a745; }
         .prioridad-baja { border-left: 5px solid #ffc107; }
         .nombre-editable:hover { text-decoration: underline; background-color: #f8f9fa; border-radius: 5px; }
-        /* Nuevos estilos para badges de modos */
         .badge-ciclo { background-color: #6610f2; color: white; }
         .badge-horario { background-color: #0dcaf0; color: black; }
     </style>
@@ -37,14 +36,21 @@
 
     <div class="row mb-4">
         <div class="col-md-4 mb-3 mb-md-0">
-            <div class="card prediccion-card h-100 text-center py-4">
-                <div class="card-body">
-                    <h5 class="opacity-75">Predicción Mensual</h5>
-                    <h1 class="display-4 fw-bold my-3" id="prediccion-val">--</h1>
-                    <p class="mb-0">kWh estimados</p>
+            <div class="card prediccion-card h-100 text-center py-3">
+                <div class="card-body d-flex flex-column justify-content-center">
+                    <h5 class="opacity-75 mb-0">Predicción Mensual</h5>
+                    
+                    <h1 class="display-4 fw-bold mt-2 mb-0" id="prediccion-val">--</h1>
+                    <p class="small opacity-75 mb-3">kWh estimados</p>
+                    
+                    <div class="bg-white bg-opacity-25 rounded p-2 mx-4">
+                        <small class="d-block text-uppercase" style="font-size: 0.7rem; letter-spacing: 1px;">Costo Aprox.</small>
+                        <h2 class="fw-bold m-0" id="prediccion-costo">-- USD</h2>
+                    </div>
                 </div>
             </div>
         </div>
+
         <div class="col-md-8">
             <div class="card h-100">
                 <div class="card-body">
@@ -108,7 +114,7 @@
                 
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input" type="checkbox" id="checkHorario" onchange="toggleModos('horario')">
-                    <label class="form-check-label">📅 Horario Fijo (Todos los días)</label>
+                    <label class="form-check-label">📅 Horario Fijo</label>
                 </div>
                 <div id="box-horario" class="d-none bg-light p-2 rounded mb-3 border">
                     <div class="row g-2">
@@ -128,14 +134,14 @@
                     <label class="form-check-label">⏱️ Modo Cíclico (Intervalos)</label>
                 </div>
                 <div id="box-ciclo" class="d-none bg-light p-2 rounded mb-3 border">
-                    <p class="small text-muted mb-2">El grupo se encenderá y apagará repetidamente.</p>
+                    <p class="small text-muted mb-2">Encender y apagar repetidamente.</p>
                     <div class="row g-2">
                         <div class="col-6">
-                            <label class="small">Minutos ENCENDIDO:</label>
+                            <label class="small">Minutos ON:</label>
                             <input type="number" id="cicloOn" class="form-control" value="10" min="1">
                         </div>
                         <div class="col-6">
-                            <label class="small">Minutos APAGADO:</label>
+                            <label class="small">Minutos OFF:</label>
                             <input type="number" id="cicloOff" class="form-control" value="10" min="1">
                         </div>
                     </div>
@@ -177,11 +183,13 @@
 
             document.getElementById('hora-sistema').innerText = data.hora_servidor;
 
-            // Gráfico
+            // Gráfico y Textos
             chart.data.labels = data.grafico.map(x => x[0].split(' ')[1].substring(0,5));
             chart.data.datasets[0].data = data.grafico.map(x => x[1]);
             chart.update('none');
+            
             document.getElementById('prediccion-val').innerText = data.estadisticas.prediccion.toFixed(2);
+            document.getElementById('prediccion-costo').innerText = "$ " + data.estadisticas.costo.toFixed(2);
             document.getElementById('tendencia-txt').innerText = data.estadisticas.tendencia;
 
             // Grupos
@@ -265,20 +273,15 @@
 
     // --- LÓGICA DE MODALES ---
     
-    // Función para que Horario y Ciclo sean excluyentes
     function toggleModos(modoActivo) {
         const boxHorario = document.getElementById('box-horario');
         const boxCiclo = document.getElementById('box-ciclo');
         const chkHorario = document.getElementById('checkHorario');
         const chkCiclo = document.getElementById('checkCiclo');
 
-        if(modoActivo === 'horario' && chkHorario.checked) {
-            chkCiclo.checked = false; // Desactivar el otro
-        } else if (modoActivo === 'ciclo' && chkCiclo.checked) {
-            chkHorario.checked = false;
-        }
+        if(modoActivo === 'horario' && chkHorario.checked) chkCiclo.checked = false; 
+        else if (modoActivo === 'ciclo' && chkCiclo.checked) chkHorario.checked = false;
 
-        // Actualizar visualización
         boxHorario.classList.toggle('d-none', !chkHorario.checked);
         boxCiclo.classList.toggle('d-none', !chkCiclo.checked);
     }
@@ -289,10 +292,9 @@
         document.getElementById('nombreGrupo').value = "";
         document.getElementById('prioridadGrupo').value = "1";
         
-        // Reset Modos
         document.getElementById('checkHorario').checked = false;
         document.getElementById('checkCiclo').checked = false;
-        toggleModos('ninguno'); // Ocultar cajas
+        toggleModos('ninguno');
         
         document.getElementById('horaInicio').value = "";
         document.getElementById('horaFin').value = "";
@@ -312,17 +314,17 @@
         document.getElementById('nombreGrupo').value = g.nombre;
         document.getElementById('prioridadGrupo').value = g.prioridad;
         
-        // Cargar Horario
+        // Horario
         document.getElementById('checkHorario').checked = (g.usar_horario === 1);
         document.getElementById('horaInicio').value = g.hora_inicio;
         document.getElementById('horaFin').value = g.hora_fin;
 
-        // Cargar Ciclo
+        // Ciclo
         document.getElementById('checkCiclo').checked = (g.modo_ciclo === 1);
         document.getElementById('cicloOn').value = g.ciclo_on || 10;
         document.getElementById('cicloOff').value = g.ciclo_off || 10;
         
-        toggleModos('ninguno'); // Refrescar cajas visibles
+        toggleModos('ninguno'); // Refrescar cajas
 
         // Reles
         document.querySelectorAll('.checkbox-rele').forEach(c => c.checked = false); 
@@ -348,17 +350,12 @@
             id: idEdicion ? idEdicion : null,
             nombre: nombre,
             prioridad: document.getElementById('prioridadGrupo').value,
-            
-            // Datos Horario
             usar_horario: document.getElementById('checkHorario').checked ? 1 : 0,
             hora_inicio: document.getElementById('horaInicio').value,
             hora_fin: document.getElementById('horaFin').value,
-
-            // Datos Ciclo (NUEVO)
             modo_ciclo: document.getElementById('checkCiclo').checked ? 1 : 0,
             ciclo_on: document.getElementById('cicloOn').value,
             ciclo_off: document.getElementById('cicloOff').value,
-
             reles: ids
         };
 
