@@ -5,7 +5,7 @@ import RPi.GPIO as GPIO
 import time
 from flask import Flask, render_template, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -31,40 +31,72 @@ def setup_gpio():
 
 # --- CEREBRO INTELIGENTE ---
 def verificar_inteligencia():
-    """Revisa cada minuto si hay que encender/apagar por horario"""
+    """Controla Horarios Fijos y Ciclos Intermitentes"""
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # Hora actual en formato 24h (HH:MM)
-    hora_actual = datetime.now().strftime("%H:%M")
+    now = datetime.now()
+    hora_actual_str = now.strftime("%H:%M")
     
     try:
-        c.execute("SELECT * FROM grupos WHERE usar_horario = 1")
+        c.execute("SELECT * FROM grupos")
         grupos = c.fetchall()
         
         for g in grupos:
-            inicio = g['hora_inicio']
-            fin = g['hora_fin']
             gid = g['id']
+            # Obtenemos estado actual del grupo (mirando el primer relé del grupo)
+            # Esto asume que todos los relés del grupo están sincronizados
+            c.execute("SELECT estado FROM reles WHERE id_grupo=? LIMIT 1", (gid,))
+            r_estado = c.fetchone()
+            estado_actual = r_estado[0] if r_estado else 0
+
+            nuevo_estado = None # Si se mantiene None, no hacemos cambios
             
-            # Lógica de intervalo
-            encender = False
-            if inicio < fin: # Ej: 08:00 a 20:00
-                if inicio <= hora_actual < fin: encender = True
-            else: # Cruza medianoche (Ej: 22:00 a 06:00)
-                if hora_actual >= inicio or hora_actual < fin: encender = True
-            
-            # Aplicar estado
-            nuevo_estado = 1 if encender else 0
-            
-            # Solo actualizamos si cambia el estado (para no saturar logs, opcional)
-            c.execute("UPDATE reles SET estado=? WHERE id_grupo=?", (nuevo_estado, gid))
-            
-            # Actualizamos físico
-            c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
-            for r in c.fetchall():
-                GPIO.output(r['pin_gpio'], not nuevo_estado)
+            # --- CASO A: CONTROL POR HORARIO ---
+            if g['usar_horario'] == 1:
+                inicio = g['hora_inicio']
+                fin = g['hora_fin']
+                
+                encender = False
+                if inicio < fin:
+                    if inicio <= hora_actual_str < fin: encender = True
+                else: # Cruza medianoche
+                    if hora_actual_str >= inicio or hora_actual_str < fin: encender = True
+                
+                nuevo_estado = 1 if encender else 0
+
+            # --- CASO B: CONTROL CÍCLICO (Tiene prioridad sobre horario si ambos están activos) ---
+            # Lógica: Si toca cambio, invertimos el estado y guardamos la hora
+            if g['modo_ciclo'] == 1:
+                min_on = g['ciclo_on']
+                min_off = g['ciclo_off']
+                last_action_str = g['ultima_accion']
+                
+                # Si es la primera vez (no hay fecha registrada), iniciamos encendiendo
+                if not last_action_str:
+                    nuevo_estado = 1
+                    c.execute("UPDATE grupos SET ultima_accion=? WHERE id=?", (now.strftime("%Y-%m-%d %H:%M:%S"), gid))
+                else:
+                    last_action = datetime.strptime(last_action_str, "%Y-%m-%d %H:%M:%S")
+                    diff_minutos = (now - last_action).total_seconds() / 60
+                    
+                    if estado_actual == 1: # Está ENCENDIDO
+                        if diff_minutos >= min_on: # Ya cumplió su tiempo ON
+                            nuevo_estado = 0 # Apagar
+                            c.execute("UPDATE grupos SET ultima_accion=? WHERE id=?", (now.strftime("%Y-%m-%d %H:%M:%S"), gid))
+                    else: # Está APAGADO
+                        if diff_minutos >= min_off: # Ya cumplió su tiempo OFF
+                            nuevo_estado = 1 # Encender
+                            c.execute("UPDATE grupos SET ultima_accion=? WHERE id=?", (now.strftime("%Y-%m-%d %H:%M:%S"), gid))
+
+            # --- APLICAR CAMBIOS ---
+            # Solo si 'nuevo_estado' se definió en alguna lógica y es diferente al actual (o forzamos actualización)
+            if nuevo_estado is not None:
+                c.execute("UPDATE reles SET estado=? WHERE id_grupo=?", (nuevo_estado, gid))
+                c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
+                for r in c.fetchall():
+                    GPIO.output(r['pin_gpio'], not nuevo_estado)
         
         conn.commit()
     except Exception as e:
@@ -83,7 +115,7 @@ def gestion_carga_critica(consumo_actual):
             c.execute("UPDATE reles SET estado=0 WHERE id_grupo=?", (gid,))
             c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
             for r in c.fetchall():
-                GPIO.output(r[0], True) # Apagar
+                GPIO.output(r[0], True) 
         conn.commit()
         conn.close()
 
@@ -155,7 +187,6 @@ def api_datos():
     
     conn.close()
     
-    # Enviamos hora del servidor para depurar horarios
     hora_servidor = datetime.now().strftime("%H:%M:%S")
 
     return jsonify({
@@ -197,23 +228,33 @@ def api_control():
             c.execute("SELECT pin_gpio FROM reles")
             for r in c.fetchall(): GPIO.output(r[0], not est)
 
+        # CREAR (Con soporte para ciclos)
         elif accion == 'crear_grupo':
-            c.execute("INSERT INTO grupos (nombre, prioridad, usar_horario, hora_inicio, hora_fin) VALUES (?,?,?,?,?)",
-                      (data.get('nombre'), int(data.get('prioridad')), int(data.get('usar_horario')), data.get('hora_inicio'), data.get('hora_fin')))
+            c.execute("""INSERT INTO grupos 
+                      (nombre, prioridad, usar_horario, hora_inicio, hora_fin, modo_ciclo, ciclo_on, ciclo_off) 
+                      VALUES (?,?,?,?,?,?,?,?)""",
+                      (data.get('nombre'), int(data.get('prioridad')), int(data.get('usar_horario')), 
+                       data.get('hora_inicio'), data.get('hora_fin'),
+                       int(data.get('modo_ciclo', 0)), int(data.get('ciclo_on', 0)), int(data.get('ciclo_off', 0))))
             gid = c.lastrowid
             for rid in data.get('reles'):
                 c.execute("UPDATE reles SET id_grupo=? WHERE id=?", (gid, rid))
 
-        # --- NUEVA FUNCIÓN: EDITAR GRUPO ---
+        # EDITAR (Con soporte para ciclos)
         elif accion == 'editar_grupo':
             gid = data.get('id')
-            c.execute("UPDATE grupos SET nombre=?, prioridad=?, usar_horario=?, hora_inicio=?, hora_fin=? WHERE id=?",
+            # Resetear la fecha de última acción para que el ciclo reinicie limpio
+            c.execute("""UPDATE grupos SET 
+                      nombre=?, prioridad=?, usar_horario=?, hora_inicio=?, hora_fin=?, 
+                      modo_ciclo=?, ciclo_on=?, ciclo_off=?, ultima_accion=NULL 
+                      WHERE id=?""",
                       (data.get('nombre'), int(data.get('prioridad')), int(data.get('usar_horario')), 
-                       data.get('hora_inicio'), data.get('hora_fin'), gid))
+                       data.get('hora_inicio'), data.get('hora_fin'),
+                       int(data.get('modo_ciclo', 0)), int(data.get('ciclo_on', 0)), int(data.get('ciclo_off', 0)),
+                       gid))
             
-            # Reasignar relés: Primero liberamos todos los de este grupo
+            # Reasignar relés
             c.execute("UPDATE reles SET id_grupo=0 WHERE id_grupo=?", (gid,))
-            # Luego asignamos los nuevos seleccionados
             for rid in data.get('reles'):
                 c.execute("UPDATE reles SET id_grupo=? WHERE id=?", (gid, rid))
 
