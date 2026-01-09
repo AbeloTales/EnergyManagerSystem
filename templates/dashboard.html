@@ -14,6 +14,8 @@
         .prioridad-baja { border-left: 5px solid #ffc107; }
         .tendencia-up { color: #dc3545; font-weight: bold; }
         .tendencia-down { color: #28a745; font-weight: bold; }
+        /* Estilo para nombre editable */
+        .nombre-editable:hover { text-decoration: underline; background-color: #f8f9fa; border-radius: 5px; }
     </style>
 </head>
 <body>
@@ -194,7 +196,17 @@
             // 3. Relés (Control Individual + Modal)
             const divR = document.getElementById('contenedor-reles');
             const listM = document.getElementById('lista-reles-modal');
-            divR.innerHTML = ''; listM.innerHTML = '';
+            
+            // --- CORRECCIÓN CRÍTICA: DETECTAR SI EL MODAL ESTÁ ABIERTO ---
+            const modalAbierto = document.getElementById('modalGrupo').classList.contains('show');
+
+            divR.innerHTML = ''; // El dashboard principal SIEMPRE se actualiza
+            
+            // La lista del modal SOLO se borra si está cerrado.
+            // Si está abierto, dejamos tus selecciones quietas.
+            if (!modalAbierto) {
+                listM.innerHTML = '';
+            }
 
             data.reles.forEach(r => {
                 // Tarjeta en Dashboard (CON EDICIÓN DE NOMBRE)
@@ -202,7 +214,7 @@
                 <div class="col-6 col-md-3 mb-3">
                     <div class="card h-100 shadow-sm border-${r.estado?'success':'light'}">
                         <div class="card-body p-2 text-center">
-                            <div class="text-primary fw-bold text-truncate mb-2" 
+                            <div class="text-primary fw-bold text-truncate mb-2 nombre-editable" 
                                  onclick="editarNombre(${r.id}, '${r.nombre}')" 
                                  style="cursor: pointer;" title="Toca para editar">
                                  ✏️ ${r.nombre}
@@ -215,12 +227,14 @@
                     </div>
                 </div>`;
 
-                // Item en Modal
-                listM.innerHTML += `
-                <label class="list-group-item d-flex justify-content-between align-items-center">
-                    <span>${r.nombre}</span>
-                    <input class="form-check-input" type="checkbox" value="${r.id}">
-                </label>`;
+                // Item en Modal (SOLO ACTUALIZAR SI ESTÁ CERRADO)
+                if (!modalAbierto) {
+                    listM.innerHTML += `
+                    <label class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>${r.nombre}</span>
+                        <input class="form-check-input" type="checkbox" value="${r.id}">
+                    </label>`;
+                }
             });
 
             // 4. Historial
@@ -288,6 +302,9 @@
         // Limpiar form
         document.getElementById('nombreGrupo').value = '';
         document.querySelectorAll('#lista-reles-modal input').forEach(c => c.checked = false);
+        
+        // Forzar actualización inmediata para ver el grupo nuevo
+        actualizar();
     }
 
     function toggleHorario() {
