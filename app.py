@@ -6,14 +6,12 @@ import time
 from flask import Flask, render_template, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
-import numpy as np # Necesario para calculos rapidos (pip install numpy)
 
 app = Flask(__name__)
 
+# --- CONFIGURACIÓN ---
 DB_NAME = 'energia.db'
-CONSUMO_LIMITE_ALERTA = 5.0 # kWh (Si el DELTA supera esto, apagamos cargas bajas)
-
-# Configuración OCR
+CONSUMO_LIMITE_ALERTA = 5.0  # Si el consumo (Delta) sube de esto, se apagan los NO prioritarios
 config_tesseract = r'--oem 3 --psm 6 outputbase digits'
 
 # --- GESTIÓN DE HARDWARE ---
@@ -22,77 +20,81 @@ def setup_gpio():
     GPIO.setwarnings(False)
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT pin_gpio, estado FROM reles")
-    for row in c.fetchall():
-        pin, estado = row
-        GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, not estado) # Lógica inversa
+    # Verificamos si la tabla existe por seguridad antes de leer
+    try:
+        c.execute("SELECT pin_gpio, estado FROM reles")
+        for row in c.fetchall():
+            pin, estado = row
+            GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, not estado) # Lógica inversa: 1 (ON) -> GPIO LOW
+    except:
+        pass # Si falla es porque no se ha inicializado la DB aun
     conn.close()
 
-# --- CEREBRO: AUTOMATIZACIÓN (HORARIOS Y PRIORIDAD) ---
+# --- CEREBRO INTELIGENTE: HORARIOS Y PRIORIDAD ---
 def verificar_inteligencia():
-    print(f"[{datetime.now().strftime('%H:%M')}] Verificando reglas inteligentes...")
+    """Revisa cada minuto si hay que encender/apagar por horario"""
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
     hora_actual = datetime.now().strftime("%H:%M")
 
-    # 1. CONTROL POR HORARIO
-    c.execute("SELECT * FROM grupos WHERE usar_horario = 1")
-    grupos_horario = c.fetchall()
-    
-    for grupo in grupos_horario:
-        inicio = grupo['hora_inicio']
-        fin = grupo['hora_fin']
-        id_grupo = grupo['id']
+    try:
+        c.execute("SELECT * FROM grupos WHERE usar_horario = 1")
+        grupos = c.fetchall()
         
-        # Lógica de intervalo (ej: 18:00 a 06:00 cruza medianoche)
-        encender = False
-        if inicio < fin: # Ej: 08:00 a 20:00
-            if inicio <= hora_actual <= fin: encender = True
-        else: # Ej: 20:00 a 06:00 (Cruza medianoche)
-            if hora_actual >= inicio or hora_actual <= fin: encender = True
-        
-        # Aplicar cambio a los relés del grupo
-        nuevo_estado = 1 if encender else 0
-        
-        # Solo actuamos si el estado actual es diferente para no saturar GPIO
-        # (Simplificado: Forzamos actualización)
-        c.execute("UPDATE reles SET estado=? WHERE id_grupo=?", (nuevo_estado, id_grupo))
-        
-        c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (id_grupo,))
-        pines = c.fetchall()
-        for p in pines:
-            GPIO.output(p['pin_gpio'], not nuevo_estado)
+        for g in grupos:
+            inicio = g['hora_inicio']
+            fin = g['hora_fin']
+            gid = g['id']
             
-    conn.commit()
-    conn.close()
+            # Lógica de intervalo (incluso si cruza medianoche)
+            encender = False
+            if inicio < fin:
+                if inicio <= hora_actual <= fin: encender = True
+            else: # Cruza medianoche (ej: 22:00 a 06:00)
+                if hora_actual >= inicio or hora_actual <= fin: encender = True
+            
+            # Aplicar estado al grupo (Solo actualizamos la DB y pines)
+            nuevo_estado = 1 if encender else 0
+            
+            # Actualizamos relés de este grupo
+            c.execute("UPDATE reles SET estado=? WHERE id_grupo=?", (nuevo_estado, gid))
+            
+            # Actualizamos físico
+            c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
+            for r in c.fetchall():
+                GPIO.output(r['pin_gpio'], not nuevo_estado)
+        
+        conn.commit()
+    except Exception as e:
+        print(f"Error inteligencia: {e}")
+    finally:
+        conn.close()
 
-def gestion_carga_critica(ultimo_consumo):
-    """Si el consumo es muy alto, apagar grupos de BAJA prioridad"""
-    if ultimo_consumo > CONSUMO_LIMITE_ALERTA:
-        print(f"⚠️ ALERTA: Consumo alto ({ultimo_consumo}). Apagando no prioritarios.")
+def gestion_carga_critica(consumo_actual):
+    """Apaga grupos de BAJA prioridad si el consumo es excesivo"""
+    if consumo_actual > CONSUMO_LIMITE_ALERTA:
+        print(f"⚠️ ALERTA: Consumo alto ({consumo_actual}). Apagando cargas bajas.")
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         
-        # Buscar grupos con prioridad BAJA (0)
+        # Obtener grupos de baja prioridad (0)
         c.execute("SELECT id FROM grupos WHERE prioridad = 0")
         grupos_baja = c.fetchall()
         
         for g in grupos_baja:
-            id_grupo = g[0]
-            # Apagar relés de este grupo
-            c.execute("UPDATE reles SET estado=0 WHERE id_grupo=?", (id_grupo,))
-            c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (id_grupo,))
-            pines = c.fetchall()
-            for p in pines:
-                GPIO.output(p[0], True) # True es APAGADO (inverso)
+            gid = g[0]
+            c.execute("UPDATE reles SET estado=0 WHERE id_grupo=?", (gid,))
+            c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
+            for r in c.fetchall():
+                GPIO.output(r[0], True) # Apagar (HIGH)
         
         conn.commit()
         conn.close()
 
-# --- TAREA OCR (MONITOREO) ---
+# --- TAREA DE MONITOREO (CÁMARA) ---
 def tarea_monitoreo_energia():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened(): return
@@ -101,50 +103,45 @@ def tarea_monitoreo_energia():
     cap.release()
 
     if ret:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
         try:
+            # Procesamiento de imagen
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
             texto = pytesseract.image_to_string(thresh, config=config_tesseract)
             texto_limpio = ''.join(filter(str.isdigit, texto))
             
             if len(texto_limpio) > 0:
                 lectura_actual = float(texto_limpio)
                 
-                # CÁLCULO DIFERENCIAL (Consumo Real)
+                # Calcular consumo real (Diferencia con anterior)
                 conn = sqlite3.connect(DB_NAME)
                 c = conn.cursor()
-                
-                # Obtener la lectura ANTERIOR
                 c.execute("SELECT valor_kwh FROM lecturas ORDER BY id DESC LIMIT 1")
                 ultima = c.fetchone()
                 
-                consumo_delta = 0.0
+                delta = 0.0
                 if ultima:
-                    lectura_anterior = ultima[0]
-                    # Solo si la nueva es mayor (para evitar errores de reset o mala lectura)
-                    if lectura_actual >= lectura_anterior:
-                        consumo_delta = lectura_actual - lectura_anterior
-                    else:
-                         # Filtro de ruido: Si es menor, ignoramos o asumimos 0
-                         consumo_delta = 0 
+                    anterior = ultima[0]
+                    if lectura_actual >= anterior:
+                        delta = lectura_actual - anterior
                 
-                # Guardar ambos datos
+                # Guardar
                 c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", 
-                          (lectura_actual, consumo_delta))
+                          (lectura_actual, delta))
                 conn.commit()
                 conn.close()
                 
-                print(f"Lectura: {lectura_actual} | Consumo detectado: {consumo_delta}")
+                # Verificar si debemos apagar cosas
+                gestion_carga_critica(delta)
                 
-                # Ejecutar reglas de apagado por exceso
-                gestion_carga_critica(consumo_delta)
+        except Exception as e:
+            print(f"Error lectura: {e}")
 
-        except Exception as e: print(f"Error OCR: {e}")
-
-# --- API Y RUTAS ---
+# --- RUTAS DE LA API ---
 
 @app.route('/')
-def index(): return render_template('dashboard.html')
+def index():
+    return render_template('dashboard.html')
 
 @app.route('/api/datos')
 def api_datos():
@@ -152,45 +149,44 @@ def api_datos():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # 1. Gráfico: Enviamos el DELTA (Consumo), no el acumulado
+    # 1. Gráfico (Últimos 20 deltas)
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 20")
-    raw_data = c.fetchall()
-    grafico = [list(row) for row in raw_data][::-1] # Invertir para cronológico
+    grafico = [list(row) for row in c.fetchall()][::-1]
     
-    # 2. Predicción y Promedios (Últimos 10 datos)
-    consumos = [x[1] for x in grafico[-10:]] if grafico else [0]
-    promedio = sum(consumos) / len(consumos) if consumos else 0
-    # Predicción simplificada: Promedio * 30 días (ajustar según frecuencia de lectura)
-    # Si lees cada 1 min, esto sería proyección de 30 mins. 
-    # Para mes real necesitamos saber intervalos. Asumamos proyección simple.
-    prediccion_mes = promedio * 30 * 24 # Ejemplo burdo
+    # 2. Estadísticas y Predicción
+    # Tomamos los últimos 10 para promediar
+    vals = [x[1] for x in grafico[-10:]] if grafico else [0]
+    promedio = sum(vals) / len(vals) if vals else 0
+    # Predicción simple (Promedio * minutos en un mes)
+    prediccion = promedio * 43200 # Ejemplo: 30 días * 24h * 60m
     
-    alerta = "Normal"
-    if consumos and consumos[-1] > (promedio * 1.2): alerta = "Subiendo"
-    elif consumos and consumos[-1] < (promedio * 0.8): alerta = "Bajando"
+    tendencia = "Estable"
+    if vals and vals[-1] > promedio * 1.1: tendencia = "Subiendo"
+    elif vals and vals[-1] < promedio * 0.9: tendencia = "Bajando"
 
-    # 3. Datos del Sistema
+    # 3. Dispositivos y Grupos
     c.execute("SELECT * FROM reles")
     reles = [dict(row) for row in c.fetchall()]
+    
     c.execute("SELECT * FROM grupos")
     grupos = [dict(row) for row in c.fetchall()]
     
-    # 4. Historial (Tabla)
-    c.execute("SELECT id, fecha, valor_kwh, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 50")
+    # 4. Historial Tabla
+    c.execute("SELECT * FROM lecturas ORDER BY id DESC LIMIT 50")
     historial = [dict(row) for row in c.fetchall()]
-
+    
     conn.close()
     
     return jsonify({
         'grafico': grafico,
         'reles': reles,
         'grupos': grupos,
+        'historial': historial,
         'estadisticas': {
             'promedio': round(promedio, 2),
-            'tendencia': alerta,
-            'prediccion': round(prediccion_mes, 2)
-        },
-        'historial': historial
+            'tendencia': tendencia,
+            'prediccion': round(prediccion, 2)
+        }
     })
 
 @app.route('/api/control', methods=['POST'])
@@ -201,35 +197,53 @@ def api_control():
     c = conn.cursor()
     
     try:
+        # TOGGLE INDIVIDUAL
         if accion == 'toggle':
-            id_rele = data.get('id')
-            c.execute("SELECT estado, pin_gpio FROM reles WHERE id=?", (id_rele,))
+            rid = data.get('id')
+            c.execute("SELECT estado, pin_gpio FROM reles WHERE id=?", (rid,))
             r = c.fetchone()
             if r:
                 nuevo = 1 - r[0]
                 GPIO.output(r[1], not nuevo)
-                c.execute("UPDATE reles SET estado=? WHERE id=?", (nuevo, id_rele))
+                c.execute("UPDATE reles SET estado=? WHERE id=?", (nuevo, rid))
+        
+        # CAMBIAR NOMBRE (Recuperado)
+        elif accion == 'editar_nombre':
+            rid = data.get('id')
+            nom = data.get('nombre')
+            c.execute("UPDATE reles SET nombre=? WHERE id=?", (nom, rid))
 
-        elif accion == 'crear_grupo': # Ahora guarda prioridad y horarios
-            nombre = data.get('nombre')
-            prio = int(data.get('prioridad')) # 1 o 0
-            horario = int(data.get('usar_horario')) # 1 o 0
-            inicio = data.get('hora_inicio')
-            fin = data.get('hora_fin')
-            ids = data.get('reles')
-            
+        # CONTROL DE GRUPO (ON/OFF Completo)
+        elif accion == 'grupo':
+            gid = data.get('id_grupo')
+            est = int(data.get('estado'))
+            c.execute("UPDATE reles SET estado=? WHERE id_grupo=?", (est, gid))
+            c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
+            for r in c.fetchall():
+                GPIO.output(r[0], not est)
+
+        # CONTROL GLOBAL
+        elif accion == 'global':
+            est = int(data.get('estado'))
+            c.execute("UPDATE reles SET estado=?", (est,))
+            c.execute("SELECT pin_gpio FROM reles")
+            for r in c.fetchall():
+                GPIO.output(r[0], not est)
+
+        # CREAR GRUPO INTELIGENTE
+        elif accion == 'crear_grupo':
             c.execute("INSERT INTO grupos (nombre, prioridad, usar_horario, hora_inicio, hora_fin) VALUES (?,?,?,?,?)",
-                      (nombre, prio, horario, inicio, fin))
+                      (data.get('nombre'), int(data.get('prioridad')), int(data.get('usar_horario')), 
+                       data.get('hora_inicio'), data.get('hora_fin')))
             gid = c.lastrowid
-            for rid in ids:
+            for rid in data.get('reles'):
                 c.execute("UPDATE reles SET id_grupo=? WHERE id=?", (gid, rid))
-                
-        elif accion == 'eliminar_grupo':
-             gid = data.get('id_grupo')
-             c.execute("UPDATE reles SET id_grupo=0 WHERE id_grupo=?", (gid,))
-             c.execute("DELETE FROM grupos WHERE id=?", (gid,))
 
-        # ... (Mantener lógica de control global si se desea) ...
+        # ELIMINAR GRUPO
+        elif accion == 'eliminar_grupo':
+            gid = data.get('id_grupo')
+            c.execute("UPDATE reles SET id_grupo=0 WHERE id_grupo=?", (gid,))
+            c.execute("DELETE FROM grupos WHERE id=?", (gid,))
 
         conn.commit()
         return jsonify({'status': 'ok'})
@@ -240,8 +254,10 @@ def api_control():
 
 if __name__ == '__main__':
     setup_gpio()
+    # Programador de tareas (Background)
     sched = BackgroundScheduler()
-    sched.add_job(tarea_monitoreo_energia, 'interval', minutes=1) # Lectura cada minuto
-    sched.add_job(verificar_inteligencia, 'interval', minutes=1) # Chequeo horario cada minuto
+    sched.add_job(tarea_monitoreo_energia, 'interval', minutes=1)
+    sched.add_job(verificar_inteligencia, 'interval', minutes=1)
     sched.start()
+    
     app.run(host='0.0.0.0', port=80, debug=False, use_reloader=False)

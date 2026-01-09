@@ -3,115 +3,127 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Energy System</title>
+    <title>Smart Energy Home</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
     <style>
-        body { background: #f4f7f6; font-family: 'Segoe UI', sans-serif; }
-        .card { border: none; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        .prediccion-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .tendencia-up { color: #dc3545; font-weight: bold; }
-        .tendencia-down { color: #28a745; font-weight: bold; }
+        body { background-color: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; }
+        .prediccion-card { background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%); color: white; }
+        .card { border: none; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .btn-grande { padding: 10px; font-weight: bold; }
         .prioridad-alta { border-left: 5px solid #28a745; }
         .prioridad-baja { border-left: 5px solid #ffc107; }
+        .tendencia-up { color: #dc3545; font-weight: bold; }
+        .tendencia-down { color: #28a745; font-weight: bold; }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark mb-4">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 p-3 shadow-sm">
     <div class="container-fluid">
-        <span class="navbar-brand">🧠 Sistema Inteligente de Energía</span>
-        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalGrupo">+ Crear Grupo Inteligente</button>
+        <span class="navbar-brand fw-bold">⚡ Sistema Inteligente</span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-danger btn-sm" onclick="controlGlobal(0)">🛑 APAGAR TODO</button>
+            <button class="btn btn-success btn-sm" onclick="controlGlobal(1)">⚡ ENCENDER TODO</button>
+            <button class="btn btn-outline-light btn-sm" data-bs-toggle="modal" data-bs-target="#modalGrupo">+ Nuevo Grupo</button>
+        </div>
     </div>
 </nav>
 
-<div class="container">
+<div class="container pb-5">
 
     <div class="row mb-4">
-        <div class="col-md-4">
-            <div class="card prediccion-box h-100">
-                <div class="card-body text-center">
-                    <h5>🔮 Predicción de Consumo</h5>
-                    <h2 id="prediccion-valor">-- kWh</h2>
-                    <p class="small opacity-75">Proyección basada en últimos 10 datos</p>
+        <div class="col-md-4 mb-3 mb-md-0">
+            <div class="card prediccion-card h-100 text-center py-4">
+                <div class="card-body">
+                    <h5 class="opacity-75">Predicción Mensual</h5>
+                    <h1 class="display-4 fw-bold my-3" id="prediccion-val">--</h1>
+                    <p class="mb-0">kWh estimados</p>
+                    <small class="opacity-75">Basado en tu consumo actual</small>
                 </div>
             </div>
         </div>
         <div class="col-md-8">
             <div class="card h-100">
                 <div class="card-body">
-                    <div class="d-flex justify-content-between">
-                        <h5 class="card-title">Consumo en Tiempo Real (Delta)</h5>
-                        <span id="alerta-tendencia">--</span>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h5 class="card-title mb-0">Consumo Real (Delta)</h5>
+                        <span id="tendencia-txt" class="small">--</span>
                     </div>
-                    <canvas id="graficoEnergia" height="80"></canvas>
+                    <canvas id="graficoEnergia" height="100"></canvas>
                 </div>
             </div>
         </div>
     </div>
 
-    <h5 class="text-muted">📂 Gestión de Zonas</h5>
-    <div class="row mb-4" id="contenedor-grupos"></div>
+    <h5 class="text-muted border-bottom pb-2 mb-3">📂 Zonas Inteligentes</h5>
+    <div class="row mb-4" id="contenedor-grupos">
+        <div class="col-12 text-center text-muted py-3">No hay grupos configurados.</div>
+    </div>
 
-    <h5 class="text-muted">🔌 Dispositivos</h5>
-    <div class="row mb-4" id="contenedor-reles"></div>
+    <h5 class="text-muted border-bottom pb-2 mb-3">🔌 Control Individual</h5>
+    <div class="row mb-4" id="contenedor-reles">
+        <div class="col-12 text-center text-muted">Cargando dispositivos...</div>
+    </div>
 
     <div class="card">
-        <div class="card-header bg-white">📜 Historial de Lecturas (Últimas 50)</div>
+        <div class="card-header bg-white fw-bold">📜 Historial de Lecturas</div>
         <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-striped mb-0 text-center">
-                    <thead><tr><th>ID</th><th>Hora</th><th>Lectura Medidor</th><th>Consumo Real</th></tr></thead>
+            <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                <table class="table table-hover mb-0 text-center small">
+                    <thead class="table-light">
+                        <tr><th>Hora</th><th>Medidor (kWh)</th><th>Consumo (Delta)</th></tr>
+                    </thead>
                     <tbody id="tabla-historial"></tbody>
                 </table>
             </div>
         </div>
     </div>
+
 </div>
 
 <div class="modal fade" id="modalGrupo" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Configurar Grupo</h5>
-                <button class="btn-close" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title">Configurar Zona Inteligente</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
-                    <label>Nombre:</label>
-                    <input type="text" id="nombreGrupo" class="form-control" placeholder="Ej: Luces Patio">
+                    <label class="form-label">Nombre del Grupo</label>
+                    <input type="text" id="nombreGrupo" class="form-control" placeholder="Ej: Luces Exterior">
                 </div>
                 
                 <div class="mb-3">
-                    <label>Prioridad:</label>
+                    <label class="form-label">Prioridad Energética</label>
                     <select id="prioridadGrupo" class="form-select">
-                        <option value="1">Alta (Siempre encendido)</option>
-                        <option value="0">Baja (Apagar si hay consumo alto)</option>
+                        <option value="1">🟢 Alta (Nunca apagar automáticamente)</option>
+                        <option value="0">🟡 Baja (Apagar si hay consumo excesivo)</option>
                     </select>
                 </div>
 
-                <div class="form-check form-switch mb-2">
+                <div class="form-check form-switch mb-3 bg-light p-2 rounded">
                     <input class="form-check-input" type="checkbox" id="checkHorario" onchange="toggleHorario()">
-                    <label class="form-check-label">Activar Control por Horario</label>
+                    <label class="form-check-label ms-2">Activar Horario Automático</label>
                 </div>
 
-                <div id="box-horario" class="d-none bg-light p-2 rounded mb-3">
-                    <div class="row">
-                        <div class="col-6">
-                            <label class="small">Encender a las:</label>
-                            <input type="time" id="horaInicio" class="form-control">
-                        </div>
-                        <div class="col-6">
-                            <label class="small">Apagar a las:</label>
-                            <input type="time" id="horaFin" class="form-control">
-                        </div>
+                <div id="box-horario" class="d-none row mb-3 g-2">
+                    <div class="col-6">
+                        <label class="small">Encender a las:</label>
+                        <input type="time" id="horaInicio" class="form-control">
+                    </div>
+                    <div class="col-6">
+                        <label class="small">Apagar a las:</label>
+                        <input type="time" id="horaFin" class="form-control">
                     </div>
                 </div>
 
-                <label>Dispositivos:</label>
-                <div id="lista-reles-modal" class="list-group"></div>
+                <label class="form-label">Dispositivos a incluir:</label>
+                <div id="lista-reles-modal" class="list-group">
+                    </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-primary" onclick="guardarGrupo()">Guardar</button>
+                <button type="button" class="btn btn-primary w-100" onclick="guardarGrupo()">Guardar Configuración</button>
             </div>
         </div>
     </div>
@@ -119,115 +131,151 @@
 
 <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart.min.js') }}"></script>
+
 <script>
+    // --- INICIALIZACIÓN ---
     const ctx = document.getElementById('graficoEnergia').getContext('2d');
     const chart = new Chart(ctx, {
         type: 'line',
-        data: { labels: [], datasets: [{ label: 'Consumo (kWh)', data: [], borderColor: '#007bff', tension: 0.4, fill: true }] },
-        options: { scales: { y: { beginAtZero: true } } }
+        data: { labels: [], datasets: [{ label: 'Consumo (kWh)', data: [], borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.1)', fill: true, tension: 0.4 }] },
+        options: { responsive: true, scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
     });
+    
+    const modalElement = new bootstrap.Modal(document.getElementById('modalGrupo'));
 
-    function toggleHorario() {
-        document.getElementById('box-horario').classList.toggle('d-none');
-    }
-
+    // --- LÓGICA DE ACTUALIZACIÓN ---
     async function actualizar() {
-        const res = await fetch('/api/datos');
-        const data = await res.json();
+        try {
+            const res = await fetch('/api/datos');
+            const data = await res.json();
 
-        // 1. Gráfico y Predicción
-        chart.data.labels = data.grafico.map(x => x[0].split(' ')[1]); // Solo hora
-        chart.data.datasets[0].data = data.grafico.map(x => x[1]);
-        chart.update('none');
+            // 1. Gráfico y Predicción
+            chart.data.labels = data.grafico.map(x => x[0].split(' ')[1].substring(0,5)); // Solo hora HH:MM
+            chart.data.datasets[0].data = data.grafico.map(x => x[1]);
+            chart.update('none');
 
-        document.getElementById('prediccion-valor').innerText = data.estadisticas.prediccion.toFixed(2) + " kWh";
-        const tend = document.getElementById('alerta-tendencia');
-        tend.innerText = "Tendencia: " + data.estadisticas.tendencia;
-        tend.className = data.estadisticas.tendencia === 'Subiendo' ? 'tendencia-up' : 'tendencia-down';
-
-        // 2. Grupos
-        const divG = document.getElementById('contenedor-grupos');
-        divG.innerHTML = '';
-        data.grupos.forEach(g => {
-            if(g.id === 0) return;
-            const tipo = g.prioridad === 1 ? '<span class="badge bg-success">Prioritario</span>' : '<span class="badge bg-warning text-dark">Baja Prioridad</span>';
-            const horarioInfo = g.usar_horario ? `<small class="d-block text-muted">🕒 ${g.hora_inicio} - ${g.hora_fin}</small>` : '';
+            document.getElementById('prediccion-val').innerText = data.estadisticas.prediccion.toFixed(2);
             
-            divG.innerHTML += `
-            <div class="col-md-6 mb-3">
-                <div class="card ${g.prioridad===1?'prioridad-alta':'prioridad-baja'} shadow-sm">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between">
-                            <h5>${g.nombre}</h5>
-                            <button class="btn btn-sm btn-outline-danger" onclick="eliminarGrupo(${g.id})">×</button>
+            const tendDiv = document.getElementById('tendencia-txt');
+            tendDiv.innerText = "Tendencia: " + data.estadisticas.tendencia;
+            tendDiv.className = data.estadisticas.tendencia === 'Subiendo' ? 'tendencia-up small' : 'tendencia-down small';
+
+            // 2. Grupos
+            const divG = document.getElementById('contenedor-grupos');
+            divG.innerHTML = '';
+            data.grupos.forEach(g => {
+                if(g.id === 0) return; // Omitir default
+                // Badges de info
+                const badgePrio = g.prioridad===1 
+                    ? '<span class="badge bg-success mb-2">Prioridad Alta</span>' 
+                    : '<span class="badge bg-warning text-dark mb-2">Baja Prioridad</span>';
+                const badgeHora = g.usar_horario 
+                    ? `<span class="badge bg-info text-dark">🕒 ${g.hora_inicio} - ${g.hora_fin}</span>` 
+                    : '';
+
+                divG.innerHTML += `
+                <div class="col-md-6 mb-3">
+                    <div class="card shadow-sm h-100 ${g.prioridad===1?'prioridad-alta':'prioridad-baja'}">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <h5 class="fw-bold">${g.nombre}</h5>
+                                <button class="btn btn-sm text-danger" onclick="eliminarGrupo(${g.id})">🗑️</button>
+                            </div>
+                            <div class="mb-3">${badgePrio} ${badgeHora}</div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-success flex-fill" onclick="controlGrupo(${g.id}, 1)">ON</button>
+                                <button class="btn btn-secondary flex-fill" onclick="controlGrupo(${g.id}, 0)">OFF</button>
+                            </div>
                         </div>
-                        ${tipo} ${horarioInfo}
                     </div>
-                </div>
-            </div>`;
-        });
+                </div>`;
+            });
 
-        // 3. Reles (Modal y Vista)
-        const divR = document.getElementById('contenedor-reles');
-        const listM = document.getElementById('lista-reles-modal');
-        divR.innerHTML = ''; listM.innerHTML = '';
+            // 3. Relés (Control Individual + Modal)
+            const divR = document.getElementById('contenedor-reles');
+            const listM = document.getElementById('lista-reles-modal');
+            divR.innerHTML = ''; listM.innerHTML = '';
 
-        data.reles.forEach(r => {
-            // Vista Dashboard
-            divR.innerHTML += `
-            <div class="col-6 col-md-3 mb-2">
-                <button class="btn w-100 ${r.estado?'btn-success':'btn-outline-secondary'}" onclick="toggle(${r.id})">
-                    ${r.nombre} <br> <small>${r.estado?'ON':'OFF'}</small>
-                </button>
-            </div>`;
-            
-            // Lista Modal
-            listM.innerHTML += `
-            <label class="list-group-item">
-                <input class="form-check-input me-2" type="checkbox" value="${r.id}"> ${r.nombre}
-            </label>`;
-        });
+            data.reles.forEach(r => {
+                // Tarjeta en Dashboard (CON EDICIÓN DE NOMBRE)
+                divR.innerHTML += `
+                <div class="col-6 col-md-3 mb-3">
+                    <div class="card h-100 shadow-sm border-${r.estado?'success':'light'}">
+                        <div class="card-body p-2 text-center">
+                            <div class="text-primary fw-bold text-truncate mb-2" 
+                                 onclick="editarNombre(${r.id}, '${r.nombre}')" 
+                                 style="cursor: pointer;" title="Toca para editar">
+                                 ✏️ ${r.nombre}
+                            </div>
+                            <div class="small text-muted mb-2">Pin ${r.pin_gpio}</div>
+                            <button onclick="toggle(${r.id})" class="btn w-100 btn-sm ${r.estado?'btn-success':'btn-outline-secondary'}">
+                                ${r.estado?'ENCENDIDO':'APAGADO'}
+                            </button>
+                        </div>
+                    </div>
+                </div>`;
 
-        // 4. Historial
-        const tbody = document.getElementById('tabla-historial');
-        tbody.innerHTML = '';
-        data.historial.forEach(h => {
-            tbody.innerHTML += `<tr>
-                <td>${h.id}</td>
-                <td>${h.fecha}</td>
-                <td>${h.valor_kwh}</td>
-                <td class="fw-bold">${h.consumo_delta.toFixed(4)}</td>
-            </tr>`;
-        });
+                // Item en Modal
+                listM.innerHTML += `
+                <label class="list-group-item d-flex justify-content-between align-items-center">
+                    <span>${r.nombre}</span>
+                    <input class="form-check-input" type="checkbox" value="${r.id}">
+                </label>`;
+            });
+
+            // 4. Historial
+            const tbody = document.getElementById('tabla-historial');
+            tbody.innerHTML = '';
+            data.historial.forEach(h => {
+                tbody.innerHTML += `<tr>
+                    <td>${h.fecha.split(' ')[1].substring(0,8)}</td>
+                    <td>${h.valor_kwh}</td>
+                    <td class="fw-bold text-primary">${h.consumo_delta.toFixed(4)}</td>
+                </tr>`;
+            });
+
+        } catch (e) { console.error("Error actualizando:", e); }
     }
+
+    // --- ACCIONES DEL USUARIO ---
 
     async function toggle(id) {
-        await fetch('/api/control', { 
-            method: 'POST', 
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({accion:'toggle', id:id})
-        });
-        actualizar();
+        await enviarApi({accion: 'toggle', id: id});
     }
 
-    async function eliminarGrupo(id) {
-        if(confirm("¿Eliminar grupo?")) {
-            await fetch('/api/control', {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({accion:'eliminar_grupo', id_grupo:id})
-            });
+    async function editarNombre(id, nombreActual) {
+        let nuevo = prompt("Nuevo nombre para este dispositivo:", nombreActual);
+        if (nuevo && nuevo !== nombreActual) {
+            await enviarApi({accion: 'editar_nombre', id: id, nombre: nuevo});
             actualizar();
         }
     }
 
-    async function guardarGrupo() {
-        const ids = [...document.querySelectorAll('#lista-reles-modal input:checked')].map(cb => parseInt(cb.value));
-        if(ids.length === 0) return alert("Selecciona dispositivos");
+    async function controlGlobal(estado) {
+        if(confirm(estado===1 ? "¿Encender TODO?" : "¿Apagar TODO?")) {
+            await enviarApi({accion: 'global', estado: estado});
+        }
+    }
 
-        const data = {
+    async function controlGrupo(gid, estado) {
+        await enviarApi({accion: 'grupo', id_grupo: gid, estado: estado});
+    }
+
+    async function eliminarGrupo(gid) {
+        if(confirm("¿Eliminar este grupo? Los dispositivos volverán a ser libres.")) {
+            await enviarApi({accion: 'eliminar_grupo', id_grupo: gid});
+        }
+    }
+
+    async function guardarGrupo() {
+        const nombre = document.getElementById('nombreGrupo').value;
+        const ids = [...document.querySelectorAll('#lista-reles-modal input:checked')].map(cb => parseInt(cb.value));
+        
+        if(!nombre || ids.length === 0) return alert("Falta nombre o seleccionar dispositivos");
+
+        const payload = {
             accion: 'crear_grupo',
-            nombre: document.getElementById('nombreGrupo').value,
+            nombre: nombre,
             prioridad: document.getElementById('prioridadGrupo').value,
             usar_horario: document.getElementById('checkHorario').checked ? 1 : 0,
             hora_inicio: document.getElementById('horaInicio').value,
@@ -235,17 +283,27 @@
             reles: ids
         };
 
+        await enviarApi(payload);
+        modalElement.hide();
+        // Limpiar form
+        document.getElementById('nombreGrupo').value = '';
+        document.querySelectorAll('#lista-reles-modal input').forEach(c => c.checked = false);
+    }
+
+    function toggleHorario() {
+        document.getElementById('box-horario').classList.toggle('d-none');
+    }
+
+    async function enviarApi(data) {
         await fetch('/api/control', {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
+            headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(data)
         });
-        
-        const modal = bootstrap.Modal.getInstance(document.getElementById('modalGrupo'));
-        modal.hide();
         actualizar();
     }
 
+    // Loop
     setInterval(actualizar, 2000);
     actualizar();
 </script>
