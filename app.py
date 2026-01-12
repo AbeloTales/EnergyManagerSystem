@@ -15,7 +15,7 @@ app = Flask(__name__)
 # --- CONFIGURACIÓN ---
 DB_NAME = 'energia.db'
 COSTO_KWH = 0.10 
-# Configuración Tesseract (Solo números)
+# Configuración Tesseract (Solo números y puntos)
 config_tesseract = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
 
 # --- GESTIÓN DE HARDWARE ---
@@ -33,25 +33,25 @@ def setup_gpio():
     except: pass
     conn.close()
 
-# --- PROCESAMIENTO DE IMAGEN (ALTO CONTRASTE) ---
+# --- PROCESAMIENTO DE IMAGEN ---
 def procesar_imagen_ocr(frame):
-    # Escala de Grises
+    # 1. Escala de Grises
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # Aumentar Contraste
+    # 2. Contraste
     contraste = cv2.convertScaleAbs(gray, alpha=1.5, beta=10)
 
-    # Umbralización OTSU INVERTIDA (Fondo Negro / Letras Blancas)
+    # 3. Umbralización (FONDO NEGRO / LETRAS BLANCAS)
     thresh = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # Limpieza (Erode suave para definir números)
+    # 4. Limpieza (Erode suave)
     kernel = np.ones((3,3), np.uint8)
     procesada = cv2.erode(thresh, kernel, iterations=1) 
     
-    # Lectura
+    # 5. Lectura
     txt = pytesseract.image_to_string(procesada, config=config_tesseract)
     
-    # Limpieza de caracteres
+    # 6. Limpieza de texto
     clean = ''.join(filter(lambda x: x.isdigit() or x == '.', txt))
     if clean.count('.') > 1:
         clean = clean.replace('.', '', clean.count('.') - 1)
@@ -162,13 +162,14 @@ def verificar_sistema():
     conn.commit()
     conn.close()
 
-# --- TAREA OCR ---
+# --- TAREA OCR (CORREGIDA PARA ACEPTAR SALTOS GRANDES) ---
 def tarea_monitoreo():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened(): return
     cap.set(3, 640); cap.set(4, 480)
     ret, frame = cap.read()
     cap.release()
+    
     if ret:
         try:
             _, clean = procesar_imagen_ocr(frame)
@@ -180,14 +181,30 @@ def tarea_monitoreo():
                 last = c.fetchone()
                 
                 delta = 0.0
-                if last and val >= last[0]:
-                    delta = val - last[0]
+                if last:
+                    # Si la lectura nueva es mayor o igual, calculamos delta
+                    if val >= last[0]:
+                        delta = val - last[0]
+                    else:
+                        # Si es menor (ej: reset de medidor), asumimos delta 0 para reiniciar
+                        delta = 0.0
+                else:
+                    # Si es la PRIMERA lectura de la historia, delta es 0
+                    delta = 0.0
                 
-                if val > 0 and delta < 200: 
+                # --- CAMBIO CRÍTICO AQUI ---
+                # Aumentamos el límite de 200 a 5000 para permitir pruebas manuales
+                # Si delta es 0 (primera vez o igual) TAMBIÉN entra.
+                if val > 0 and delta < 5000: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
+                    print(f"Lectura guardada: {val} (Delta: {delta})")
+                else:
+                    print(f"Lectura ignorada por salto excesivo: {val} (Delta: {delta})")
+                
                 conn.close()
-        except: pass
+        except Exception as e:
+            print(f"Error monitor: {e}")
 
 # --- RUTAS ---
 @app.route('/')
@@ -203,10 +220,18 @@ def api_datos():
     c = conn.cursor()
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 30")
     grafico = [list(r) for r in c.fetchall()][::-1] 
-    vals = [x[1] for x in grafico[-10:]] if grafico else [0]
-    prom = sum(vals)/len(vals) if vals else 0
+    
+    # Manejo de listas vacías para evitar errores
+    if grafico:
+        vals = [x[1] for x in grafico[-10:]]
+        prom = sum(vals)/len(vals) if len(vals) > 0 else 0
+    else:
+        vals = []
+        prom = 0
+
     pred_kwh = prom * 43200
     pred_usd = pred_kwh * COSTO_KWH
+    
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
     c.execute("SELECT * FROM reles")
@@ -214,7 +239,9 @@ def api_datos():
     c.execute("SELECT * FROM grupos")
     grupos = [dict(r) for r in c.fetchall()]
     conn.close()
+    
     hora_servidor = datetime.now().strftime("%H:%M:%S")
+
     return jsonify({
         'grafico': grafico, 'reles': reles, 'grupos': grupos,
         'config': dict(cfg),
@@ -222,13 +249,12 @@ def api_datos():
         'hora_servidor': hora_servidor 
     })
 
-# --- NUEVA RUTA: RESETEAR DATOS ---
 @app.route('/api/reset_datos', methods=['POST'])
 def reset_datos():
     try:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-        c.execute("DELETE FROM lecturas") # Borra todo el historial
+        c.execute("DELETE FROM lecturas") 
         conn.commit()
         conn.close()
         return jsonify({'status': 'ok'})
