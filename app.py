@@ -5,7 +5,7 @@ import RPi.GPIO as GPIO
 import time
 import requests
 import base64
-import numpy as np # Necesitamos numpy para operaciones de engrosamiento
+import numpy as np
 from flask import Flask, render_template, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
@@ -15,8 +15,11 @@ app = Flask(__name__)
 # --- CONFIGURACIÓN ---
 DB_NAME = 'energia.db'
 COSTO_KWH = 0.10 
-# Configuración Tesseract: --psm 7 trata la imagen como una sola línea de texto
-config_tesseract = r'--oem 3 --psm 7 outputbase digits'
+
+# --- MEJORA CRÍTICA OCR: WHITELIST ---
+# Le decimos a Tesseract: "Solo busca números y puntos, ignora letras basura"
+# --psm 7: Tratar la imagen como una única línea de texto.
+config_tesseract = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
 
 # --- GESTIÓN DE HARDWARE ---
 def setup_gpio():
@@ -33,36 +36,50 @@ def setup_gpio():
     except: pass
     conn.close()
 
-# --- FUNCIÓN CENTRAL DE PROCESAMIENTO DE IMAGEN ---
+# --- PROCESAMIENTO DE IMAGEN (OPTIMIZADO PARA NEGRO SOBRE BLANCO) ---
 def procesar_imagen_ocr(frame):
     """
-    Convierte una imagen de números blancos/LCD en algo legible para Tesseract.
-    Retorna: (imagen_procesada, texto_leido)
+    Rutina mejorada para leer pantallas digitales (Fondo Claro, Letras Oscuras)
     """
-    # 1. Escala de grises
+    # 1. Escala de Grises
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # 2. Aumentar el contraste (Hacer lo blanco más blanco y lo negro más negro)
-    # alpha = contraste (1.0-3.0), beta = brillo (0-100)
-    contraste = cv2.convertScaleAbs(gray, alpha=1.5, beta=10)
+    # 2. Suavizado Gaussiano (Vital para pantallas para quitar el pixelado)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # 3. Umbral Adaptativo (Adaptive Threshold)
+    # En lugar de un corte fijo, calcula el umbral por zonas. 
+    # Es perfecto para pantallas con brillo desigual.
+    # cv2.THRESH_BINARY: Mantiene el fondo BLANCO y letras NEGRAS.
+    thresh = cv2.adaptiveThreshold(
+        blurred, 
+        255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY, 
+        11, # Tamaño del bloque de vecindad
+        2   # Constante a restar
+    )
 
-    # 3. Umbralización (THRESHOLD)
-    # THRESH_BINARY_INV: Lo que es BLANCO (números) se vuelve NEGRO.
-    # Lo que es NEGRO (fondo) se vuelve BLANCO.
-    # Tesseract ama el texto negro sobre fondo blanco.
-    thresh = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-
-    # 4. Operación Morfológica (Engrosar texto)
-    # Los números digitales a veces son muy finos o están segmentados.
-    # Esto los "conecta".
+    # 4. Limpieza de Ruido (Morfología)
+    # Como tenemos letras negras sobre fondo blanco, usamos ERODE.
+    # Erode en fondo blanco "come" el blanco y hace el negro más grueso.
     kernel = np.ones((3,3), np.uint8)
-    # ERODE en imagen invertida = Engrosar las letras negras
-    procesada = cv2.erode(thresh, kernel, iterations=1) 
+    procesada = cv2.erode(thresh, kernel, iterations=1)
     
-    # 5. Lectura OCR
+    # --- PASO EXTRA DE SEGURIDAD ---
+    # Tesseract prefiere bordes nítidos. A veces un pequeño desenfoque final ayuda.
+    procesada = cv2.medianBlur(procesada, 3)
+
+    # 5. Lectura
     txt = pytesseract.image_to_string(procesada, config=config_tesseract)
-    clean = ''.join(filter(str.isdigit, txt))
     
+    # Limpieza final del string (solo digitos y un solo punto decimal)
+    clean = ''.join(filter(lambda x: x.isdigit() or x == '.', txt))
+    
+    # Corregir errores comunes (ej: dos puntos ".." -> ".")
+    if clean.count('.') > 1:
+        clean = clean.replace('.', '', clean.count('.') - 1) # Dejar solo el ultimo
+        
     return procesada, clean
 
 # --- TELEGRAM ---
@@ -145,7 +162,8 @@ def verificar_sistema():
             last = g['ultima_accion']
             min_on, min_off = g['ciclo_on'], g['ciclo_off']
             c.execute("SELECT estado FROM reles WHERE id_grupo=? LIMIT 1", (gid,))
-            estado_actual = c.fetchone()[0] if c.fetchone() else 0
+            r_data = c.fetchone()
+            estado_actual = r_data[0] if r_data else 0
 
             if not last:
                 nuevo_estado = 1
@@ -178,7 +196,6 @@ def tarea_monitoreo():
     
     if ret:
         try:
-            # Usamos la nueva función de procesamiento centralizado
             _, clean = procesar_imagen_ocr(frame)
             
             if len(clean) > 0:
@@ -192,8 +209,8 @@ def tarea_monitoreo():
                 if last and val >= last[0]:
                     delta = val - last[0]
                 
-                # Filtro: Ignorar lecturas absurdas (ej: 0.0 o saltos gigantes por error OCR)
-                if val > 0 and delta < 100: 
+                # Filtro: Descartar saltos gigantescos (ruido) o valores 0 puros
+                if val > 0 and delta < 200: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
                 conn.close()
@@ -238,7 +255,7 @@ def test_telegram():
     if exito: return jsonify({'status': 'ok'})
     else: return jsonify({'status': 'error', 'msg': 'Fallo al enviar. Verifique Token/ChatID'})
 
-# --- DEBUG CÁMARA (VISUALIZACIÓN) ---
+# --- DEBUG CÁMARA ---
 @app.route('/api/debug_camara')
 def debug_camara():
     cap = cv2.VideoCapture(0)
@@ -249,10 +266,8 @@ def debug_camara():
     
     if not ret: return jsonify({'status': 'error', 'msg': 'Error captura'})
 
-    # Usamos la misma función que usa el robot para ver exactamente lo mismo
     imagen_procesada, lectura = procesar_imagen_ocr(frame)
     
-    # Convertir a JPG para enviar al navegador
     _, buffer = cv2.imencode('.jpg', imagen_procesada)
     img_str = base64.b64encode(buffer).decode('utf-8')
     
