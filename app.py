@@ -15,7 +15,7 @@ app = Flask(__name__)
 # --- CONFIGURACIÓN ---
 DB_NAME = 'energia.db'
 COSTO_KWH = 0.10 
-# Mantenemos el filtro de solo números, ayuda mucho
+# Configuración Tesseract (Solo números)
 config_tesseract = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
 
 # --- GESTIÓN DE HARDWARE ---
@@ -33,39 +33,26 @@ def setup_gpio():
     except: pass
     conn.close()
 
-# --- PROCESAMIENTO DE IMAGEN (VERSION ALTO CONTRASTE) ---
+# --- PROCESAMIENTO DE IMAGEN (ALTO CONTRASTE) ---
 def procesar_imagen_ocr(frame):
-    """
-    Versión 'Fondo Negro / Letras Blancas' (OTSU Invertido)
-    Genera una imagen más limpia visualmente.
-    """
-    # 1. Escala de Grises
+    # Escala de Grises
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # 2. Aumentar Contraste (Hacer el blanco más brillante)
+    # Aumentar Contraste
     contraste = cv2.convertScaleAbs(gray, alpha=1.5, beta=10)
 
-    # 3. Umbralización OTSU INVERTIDA
-    # Convierte todo a BLANCO (texto) y NEGRO (fondo).
-    # Genera bloques sólidos, eliminando el ruido del 'Adaptive Threshold'.
+    # Umbralización OTSU INVERTIDA (Fondo Negro / Letras Blancas)
     thresh = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # 4. Limpieza (Morfología)
-    # En imagen invertida (letras blancas), 'dilate' engrosa la letra.
-    # 'erode' la hace más fina. Usamos un kernel suave.
+    # Limpieza (Erode suave para definir números)
     kernel = np.ones((3,3), np.uint8)
-    
-    # Truco: Si las letras salen muy pegadas, usa erode. Si salen muy finas, usa dilate.
-    # Volvemos al erode suave que tenías antes que te gustaba.
     procesada = cv2.erode(thresh, kernel, iterations=1) 
     
-    # 5. Lectura
+    # Lectura
     txt = pytesseract.image_to_string(procesada, config=config_tesseract)
     
-    # Limpieza de caracteres no numéricos
+    # Limpieza de caracteres
     clean = ''.join(filter(lambda x: x.isdigit() or x == '.', txt))
-    
-    # Corrección de puntos dobles (ej: 12..5 -> 12.5)
     if clean.count('.') > 1:
         clean = clean.replace('.', '', clean.count('.') - 1)
         
@@ -175,14 +162,13 @@ def verificar_sistema():
     conn.commit()
     conn.close()
 
-# --- TAREA OCR (AUTOMÁTICA) ---
+# --- TAREA OCR ---
 def tarea_monitoreo():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened(): return
     cap.set(3, 640); cap.set(4, 480)
     ret, frame = cap.read()
     cap.release()
-    
     if ret:
         try:
             _, clean = procesar_imagen_ocr(frame)
@@ -236,13 +222,25 @@ def api_datos():
         'hora_servidor': hora_servidor 
     })
 
+# --- NUEVA RUTA: RESETEAR DATOS ---
+@app.route('/api/reset_datos', methods=['POST'])
+def reset_datos():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("DELETE FROM lecturas") # Borra todo el historial
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'msg': str(e)}), 500
+
 @app.route('/api/test_telegram', methods=['POST'])
 def test_telegram():
     exito = enviar_telegram("🔔 PRUEBA DE SISTEMA:\n¡Conexión exitosa con el Monitor de Energía!", forzar=True)
     if exito: return jsonify({'status': 'ok'})
     else: return jsonify({'status': 'error', 'msg': 'Fallo al enviar. Verifique Token/ChatID'})
 
-# --- DEBUG CÁMARA ---
 @app.route('/api/debug_camara')
 def debug_camara():
     cap = cv2.VideoCapture(0)
@@ -253,12 +251,9 @@ def debug_camara():
     
     if not ret: return jsonify({'status': 'error', 'msg': 'Error captura'})
 
-    # Usamos la versión de alto contraste
     imagen_procesada, lectura = procesar_imagen_ocr(frame)
-    
     _, buffer = cv2.imencode('.jpg', imagen_procesada)
     img_str = base64.b64encode(buffer).decode('utf-8')
-    
     return jsonify({'status': 'ok', 'imagen': img_str, 'lectura_detectada': lectura if lectura else "Nada"})
 
 @app.route('/api/guardar_config', methods=['POST'])

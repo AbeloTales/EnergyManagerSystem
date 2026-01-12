@@ -11,8 +11,13 @@
         .prediccion-card { background: linear-gradient(135deg, #2980b9 0%, #2c3e50 100%); border: 1px solid #3498db; }
         .btn-outline-primary { color: #3498db; border-color: #3498db; }
         .btn-outline-primary:hover { background-color: #3498db; color: white; }
-        .form-control, .form-select { background-color: #2c3e50; border: 1px solid #7f8c8d; color: white; }
+        
+        /* CORRECCIÓN DE COLORES PARA TEXTOS */
+        .text-muted { color: #dcdcdc !important; } /* Gris muy claro para leer bien sobre azul */
+        .small { color: #e0e0e0 !important; }
+        .form-control, .form-select { background-color: #2c3e50; border: 1px solid #95a5a6; color: white; }
         .form-control:focus { background-color: #34495e; color: white; border-color: #3498db; }
+        
         .modal-content { background-color: #2c3e50; color: white; }
         .list-group-item { background-color: transparent; color: white; border-color: #7f8c8d; }
         .nombre-editable:hover { text-decoration: underline; color: #3498db; cursor: pointer; }
@@ -30,6 +35,8 @@
             Hora Sistema: <span id="hora-sistema" class="fw-bold text-info">--:--:--</span>
         </div>
         <div class="d-flex gap-2">
+            <button class="btn btn-warning btn-sm border border-light" onclick="resetearDatos()">🗑️ Reset Historial</button>
+            <div class="vr bg-secondary mx-1"></div>
             <a href="/" class="btn btn-outline-info btn-sm">Ver Vista Usuario 👤</a>
             <button class="btn btn-danger btn-sm" onclick="controlGlobal(0)">🛑 APAGAR TODO</button>
             <button class="btn btn-success btn-sm" onclick="controlGlobal(1)">⚡ ENCENDER TODO</button>
@@ -44,11 +51,11 @@
         <div class="col-md-4 mb-3 mb-md-0">
             <div class="card prediccion-card h-100 text-center py-3">
                 <div class="card-body">
-                    <h5 class="text-info opacity-75">Predicción Mensual</h5>
-                    <h1 class="display-5 fw-bold my-2" id="prediccion-val">--</h1>
-                    <p class="mb-0 text-muted">kWh estimados</p>
+                    <h5 class="text-info opacity-100 fw-bold">Predicción Mensual</h5>
+                    <h1 class="display-5 fw-bold my-2 text-white" id="prediccion-val">--</h1>
+                    <p class="mb-0 text-white opacity-75">kWh estimados</p>
                     <div class="mt-3 pt-3 border-top border-secondary">
-                        <small class="text-uppercase ls-1">Costo Proyectado</small>
+                        <small class="text-uppercase ls-1 text-white">Costo Proyectado</small>
                         <h3 class="fw-bold text-warning m-0" id="prediccion-costo">--</h3>
                     </div>
                 </div>
@@ -58,8 +65,8 @@
             <div class="card h-100">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <h5 class="card-title mb-0 text-info">Consumo en Tiempo Real (Delta)</h5>
-                        <span id="tendencia-txt" class="small text-muted">--</span>
+                        <h5 class="card-title mb-0 text-info fw-bold">Consumo en Tiempo Real (Delta)</h5>
+                        <span id="tendencia-txt" class="small text-white">--</span>
                     </div>
                     <canvas id="graficoEnergia" height="100"></canvas>
                 </div>
@@ -74,11 +81,11 @@
         <div class="card-body">
             <div class="row g-3 align-items-end">
                 <div class="col-md-5">
-                    <label class="small text-muted">Bot Token:</label>
+                    <label class="small text-light">Bot Token:</label>
                     <input type="text" id="teleToken" class="form-control form-control-sm" placeholder="123456:ABC-def...">
                 </div>
                 <div class="col-md-5">
-                    <label class="small text-muted">Chat ID:</label>
+                    <label class="small text-light">Chat ID:</label>
                     <input type="text" id="teleChat" class="form-control form-control-sm" placeholder="Ej: 987654321">
                 </div>
                 <div class="col-md-2">
@@ -88,7 +95,7 @@
                     </div>
                 </div>
             </div>
-            <small class="text-muted fst-italic mt-2 d-block">
+            <small class="text-white fst-italic mt-2 d-block opacity-75">
                 * Busca <strong>@userinfobot</strong> en Telegram para obtener tu ID numérico.
             </small>
         </div>
@@ -99,13 +106,13 @@
             📷 Calibración de Sensor (Cámara)
         </div>
         <div class="card-body text-center">
-            <p class="text-muted small">Usa esto para enfocar la cámara. Verás la imagen en B/N tal como la procesa el sistema.</p>
+            <p class="text-white small">Usa esto para enfocar la cámara. Verás la imagen en B/N tal como la procesa el sistema.</p>
             
             <div class="row justify-content-center">
                 <div class="col-md-6">
                     <img id="imgDebug" src="" class="img-fluid border border-secondary rounded mb-3 d-none" style="max-height: 300px;">
-                    <div class="alert alert-dark d-flex justify-content-between align-items-center p-2">
-                        <span class="small text-muted">Lectura OCR:</span>
+                    <div class="alert alert-dark d-flex justify-content-between align-items-center p-2 border border-secondary">
+                        <span class="small text-light">Lectura OCR:</span>
                         <strong id="lecturaDebug" class="text-warning fs-5">--</strong>
                     </div>
                     <button class="btn btn-warning w-100 fw-bold text-dark" onclick="verCamara()" id="btnCam">
@@ -116,12 +123,12 @@
         </div>
     </div>
 
-    <h5 class="text-muted border-bottom border-secondary pb-2 mb-3">📂 Gestión de Grupos</h5>
+    <h5 class="text-light border-bottom border-secondary pb-2 mb-3">📂 Gestión de Grupos</h5>
     <div class="row mb-4" id="contenedor-grupos">
-        <div class="col-12 text-center text-muted py-3">Cargando...</div>
+        <div class="col-12 text-center text-light py-3">Cargando...</div>
     </div>
 
-    <h5 class="text-muted border-bottom border-secondary pb-2 mb-3">🔌 Relés Físicos (Edición)</h5>
+    <h5 class="text-light border-bottom border-secondary pb-2 mb-3">🔌 Relés Físicos (Edición)</h5>
     <div class="row mb-4" id="contenedor-reles"></div>
 
 </div>
@@ -137,12 +144,12 @@
                 <input type="hidden" id="idGrupoEditar" value=""> 
                 
                 <div class="mb-3">
-                    <label class="form-label">Nombre del Grupo</label>
+                    <label class="form-label text-light">Nombre del Grupo</label>
                     <input type="text" id="nombreGrupo" class="form-control" placeholder="Ej: Luces Exterior">
                 </div>
                 
                 <div class="mb-3">
-                    <label class="form-label">Prioridad Energética</label>
+                    <label class="form-label text-light">Prioridad Energética</label>
                     <select id="prioridadGrupo" class="form-select">
                         <option value="1">🟢 Alta (Esencial - No apagar)</option>
                         <option value="0">🟡 Baja (Apagable por ahorro)</option>
@@ -154,16 +161,16 @@
                 
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input" type="checkbox" id="checkHorario" onchange="toggleModos('horario')">
-                    <label class="form-check-label">📅 Horario Fijo</label>
+                    <label class="form-check-label text-light">📅 Horario Fijo</label>
                 </div>
                 <div id="box-horario" class="d-none bg-dark p-2 rounded mb-3 border border-secondary">
                     <div class="row g-2">
                         <div class="col-6">
-                            <label class="small text-muted">ON (HH:MM):</label>
+                            <label class="small text-light">ON (HH:MM):</label>
                             <input type="time" id="horaInicio" class="form-control form-control-sm">
                         </div>
                         <div class="col-6">
-                            <label class="small text-muted">OFF (HH:MM):</label>
+                            <label class="small text-light">OFF (HH:MM):</label>
                             <input type="time" id="horaFin" class="form-control form-control-sm">
                         </div>
                     </div>
@@ -171,23 +178,23 @@
 
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input" type="checkbox" id="checkCiclo" onchange="toggleModos('ciclo')">
-                    <label class="form-check-label">⏱️ Modo Cíclico (Intervalos)</label>
+                    <label class="form-check-label text-light">⏱️ Modo Cíclico (Intervalos)</label>
                 </div>
                 <div id="box-ciclo" class="d-none bg-dark p-2 rounded mb-3 border border-secondary">
                     <div class="row g-2">
                         <div class="col-6">
-                            <label class="small text-muted">Minutos ON:</label>
+                            <label class="small text-light">Minutos ON:</label>
                             <input type="number" id="cicloOn" class="form-control form-control-sm" value="10" min="1">
                         </div>
                         <div class="col-6">
-                            <label class="small text-muted">Minutos OFF:</label>
+                            <label class="small text-light">Minutos OFF:</label>
                             <input type="number" id="cicloOff" class="form-control form-control-sm" value="10" min="1">
                         </div>
                     </div>
                 </div>
                 
                 <hr class="border-secondary">
-                <label class="form-label">Asignar Relés:</label>
+                <label class="form-label text-light">Asignar Relés:</label>
                 <div id="lista-reles-modal" class="list-group"></div>
             </div>
             <div class="modal-footer border-secondary">
@@ -205,7 +212,14 @@
     const chart = new Chart(ctx, {
         type: 'line',
         data: { labels: [], datasets: [{ label: 'Delta', data: [], borderColor: '#3498db', backgroundColor: 'rgba(52, 152, 219, 0.2)', fill: true, tension: 0.3 }] },
-        options: { responsive: true, scales: { y: { beginAtZero: true, grid: { color: '#7f8c8d' } }, x: { grid: { color: '#7f8c8d' } } } }
+        options: { 
+            responsive: true, 
+            scales: { 
+                y: { beginAtZero: true, grid: { color: '#7f8c8d' }, ticks: { color: '#ecf0f1' } }, 
+                x: { grid: { color: '#7f8c8d' }, ticks: { color: '#ecf0f1' } } 
+            },
+            plugins: { legend: { labels: { color: 'white' } } }
+        }
     });
     
     const modalElement = new bootstrap.Modal(document.getElementById('modalGrupo'));
@@ -216,7 +230,6 @@
         try {
             const res = await fetch('/api/datos');
             const data = await res.json();
-            
             relesGlobales = data.reles;
             gruposGlobales = data.grupos;
 
@@ -282,7 +295,7 @@
                         <div class="card-body p-2 text-center">
                             <div class="text-info fw-bold text-truncate mb-2 nombre-editable" 
                                  onclick="editarNombre(${r.id}, '${r.nombre}')">✏️ ${r.nombre}</div>
-                            <div class="small text-muted mb-2">Pin ${r.pin_gpio}</div>
+                            <div class="small text-light mb-2">Pin ${r.pin_gpio}</div>
                             <button onclick="toggle(${r.id})" class="btn w-100 btn-sm ${btnClass}">
                                 ${r.estado?'ENCENDIDO':'APAGADO'}
                             </button>
@@ -293,7 +306,7 @@
                 if (!modalAbierto) {
                     listM.innerHTML += `
                     <label class="list-group-item d-flex justify-content-between align-items-center">
-                        <span>${r.nombre}</span>
+                        <span class="text-light">${r.nombre}</span>
                         <input class="form-check-input checkbox-rele" type="checkbox" value="${r.id}" id="check-rele-${r.id}">
                     </label>`;
                 }
@@ -302,7 +315,22 @@
         } catch (e) { console.error(e); }
     }
 
-    // --- FUNCIONES TELEGRAM Y CÁMARA ---
+    // --- NUEVA FUNCIÓN: RESETEAR DATOS ---
+    async function resetearDatos() {
+        if(confirm("⚠️ ¿ESTÁS SEGURO?\n\nEsto borrará TODO el historial de consumo y la gráfica se reiniciará.\n\nNo se puede deshacer.")) {
+            try {
+                const res = await fetch('/api/reset_datos', {method: 'POST'});
+                const data = await res.json();
+                if(data.status === 'ok') {
+                    alert("✅ Historial borrado correctamente.");
+                    location.reload();
+                } else {
+                    alert("Error: " + data.msg);
+                }
+            } catch(e) { alert("Error de red"); }
+        }
+    }
+
     async function guardarTelegram() {
         const t = document.getElementById('teleToken').value;
         const c = document.getElementById('teleChat').value;
@@ -313,7 +341,6 @@
         alert("✅ Configuración de Telegram guardada");
     }
 
-    // --- FUNCIÓN DE PRUEBA TELEGRAM ---
     async function probarTelegram() {
         const btn = event.target; 
         btn.disabled = true;
@@ -330,7 +357,6 @@
         const btn = document.getElementById('btnCam');
         const img = document.getElementById('imgDebug');
         const txt = document.getElementById('lecturaDebug');
-        
         btn.disabled = true; btn.innerText = "Capturando..."; txt.innerText = "Procesando...";
         try {
             const res = await fetch('/api/debug_camara');
@@ -345,14 +371,11 @@
         btn.disabled = false; btn.innerText = "📸 Tomar Foto de Prueba";
     }
 
-    // --- FUNCIONES GRUPOS ---
     function toggleModos(modoActivo) {
         const chkH = document.getElementById('checkHorario');
         const chkC = document.getElementById('checkCiclo');
-        
         if(modoActivo === 'horario' && chkH.checked) chkC.checked = false; 
         else if (modoActivo === 'ciclo' && chkC.checked) chkH.checked = false;
-
         document.getElementById('box-horario').classList.toggle('d-none', !chkH.checked);
         document.getElementById('box-ciclo').classList.toggle('d-none', !chkC.checked);
     }
@@ -378,17 +401,13 @@
         document.getElementById('idGrupoEditar').value = idGrupo; 
         document.getElementById('nombreGrupo').value = g.nombre;
         document.getElementById('prioridadGrupo').value = g.prioridad;
-        
         document.getElementById('checkHorario').checked = (g.usar_horario === 1);
         document.getElementById('horaInicio').value = g.hora_inicio;
         document.getElementById('horaFin').value = g.hora_fin;
-
         document.getElementById('checkCiclo').checked = (g.modo_ciclo === 1);
         document.getElementById('cicloOn').value = g.ciclo_on || 10;
         document.getElementById('cicloOff').value = g.ciclo_off || 10;
-        
         toggleModos('ninguno');
-
         document.querySelectorAll('.checkbox-rele').forEach(c => c.checked = false); 
         relesGlobales.forEach(r => {
             if (r.id_grupo === idGrupo) {
@@ -403,9 +422,7 @@
         const idEd = document.getElementById('idGrupoEditar').value;
         const nom = document.getElementById('nombreGrupo').value;
         const ids = [...document.querySelectorAll('#lista-reles-modal input:checked')].map(cb => parseInt(cb.value));
-        
         if(!nom || ids.length === 0) return alert("Faltan datos");
-
         const payload = {
             accion: idEd ? 'editar_grupo' : 'crear_grupo',
             id: idEd ? idEd : null,
