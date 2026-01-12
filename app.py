@@ -4,6 +4,7 @@ import pytesseract
 import RPi.GPIO as GPIO
 import time
 import requests
+import base64
 from flask import Flask, render_template, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
@@ -31,8 +32,8 @@ def setup_gpio():
     conn.close()
 
 # --- TELEGRAM ---
-def enviar_telegram(mensaje):
-    """Envía alerta si hay credenciales configuradas"""
+def enviar_telegram(mensaje, forzar=False):
+    """Envía alerta. Si forzar=True, ignora el tiempo de espera."""
     try:
         conn = sqlite3.connect(DB_NAME)
         conn.row_factory = sqlite3.Row
@@ -45,27 +46,31 @@ def enviar_telegram(mensaje):
         last_alert = cfg['ultima_alerta']
         conn.close()
 
-        if not token or not chat_id: return
+        if not token or not chat_id: return False
 
-        # Anti-Spam: Solo enviar 1 alerta cada 30 min para no saturar
+        # Anti-Spam (Solo si NO es forzado)
         now = datetime.now()
-        if last_alert:
+        if not forzar and last_alert:
             last_time = datetime.strptime(last_alert, "%Y-%m-%d %H:%M:%S")
-            if (now - last_time).total_seconds() < 1800: return 
+            if (now - last_time).total_seconds() < 1800: return False
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": "⚠️ ALERTA ENERGÍA:\n" + mensaje}
-        requests.post(url, json=payload)
+        payload = {"chat_id": chat_id, "text": mensaje}
+        r = requests.post(url, json=payload)
         
-        # Actualizar fecha de alerta
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("UPDATE config SET ultima_alerta=? WHERE id=1", (now.strftime("%Y-%m-%d %H:%M:%S"),))
-        conn.commit()
-        conn.close()
-        print("Telegram enviado.")
+        # Actualizar fecha solo si fue una alerta real (no test)
+        if not forzar and r.status_code == 200:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute("UPDATE config SET ultima_alerta=? WHERE id=1", (now.strftime("%Y-%m-%d %H:%M:%S"),))
+            conn.commit()
+            conn.close()
+            
+        return r.status_code == 200
 
-    except Exception as e: print(f"Error Telegram: {e}")
+    except Exception as e: 
+        print(f"Error Telegram: {e}")
+        return False
 
 # --- CEREBRO: CONTROL Y ALERTAS ---
 def verificar_sistema():
@@ -91,30 +96,28 @@ def verificar_sistema():
     limitado_por_costo = False
     if prediccion_costo > set_point:
         limitado_por_costo = True
-        enviar_telegram(f"Consumo proyectado (${prediccion_costo:.2f}) supera su Set Point (${set_point:.2f}). Apagando grupos no esenciales.")
+        enviar_telegram(f"⚠️ PRECAUCIÓN: Consumo proyectado (${prediccion_costo:.2f}) supera el presupuesto (${set_point:.2f}). Se apagarán grupos no esenciales.")
         
-        # Apagar grupos Baja Prioridad
         c.execute("SELECT id, pin_gpio FROM reles WHERE id_grupo IN (SELECT id FROM grupos WHERE prioridad=0)")
         for r in c.fetchall():
             c.execute("UPDATE reles SET estado=0 WHERE id=?", (r['id'],))
             GPIO.output(r['pin_gpio'], True) # OFF
 
-    # 3. Alerta de consumo inusual (muy bajo)
+    # 3. Alerta de consumo inusual
     if promedio > 0 and vals and vals[0] < (promedio * 0.1): 
-        enviar_telegram("Consumo inusualmente bajo detectado. ¿Falla eléctrica?")
+        enviar_telegram("⚠️ ALERTA TÉCNICA: Consumo inusualmente bajo detectado. Verifique suministro eléctrico.")
 
-    # 4. CONTROL INTELIGENTE (Horarios/Ciclos) - Solo si NO estamos limitados por costo
+    # 4. CONTROL INTELIGENTE (Horarios/Ciclos)
     c.execute("SELECT * FROM grupos")
     grupos = c.fetchall()
     
     for g in grupos:
-        # Si es prioridad BAJA y estamos limitados, saltamos su lógica (se queda apagado)
         if limitado_por_costo and g['prioridad'] == 0: continue
 
         gid = g['id']
         nuevo_estado = None
         
-        # Lógica de Horario
+        # Horario
         if g['usar_horario'] == 1:
             ini, fin = g['hora_inicio'], g['hora_fin']
             encender = False
@@ -124,7 +127,7 @@ def verificar_sistema():
                 if hora_actual >= ini or hora_actual < fin: encender = True
             nuevo_estado = 1 if encender else 0
 
-        # Lógica de Ciclo
+        # Ciclo
         if g['modo_ciclo'] == 1:
             last = g['ultima_accion']
             min_on, min_off = g['ciclo_on'], g['ciclo_off']
@@ -199,7 +202,6 @@ def api_datos():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # Datos
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 30")
     grafico = [list(r) for r in c.fetchall()][::-1] 
     
@@ -208,18 +210,14 @@ def api_datos():
     pred_kwh = prom * 43200
     pred_usd = pred_kwh * COSTO_KWH
     
-    # Configuración
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
-    
     c.execute("SELECT * FROM reles")
     reles = [dict(r) for r in c.fetchall()]
     c.execute("SELECT * FROM grupos")
     grupos = [dict(r) for r in c.fetchall()]
-
     conn.close()
     
-    # --- CORRECCIÓN: CALCULAMOS Y ENVIAMOS LA HORA ---
     hora_servidor = datetime.now().strftime("%H:%M:%S")
 
     return jsonify({
@@ -228,6 +226,35 @@ def api_datos():
         'stats': {'prom': round(prom, 2), 'pred_kwh': round(pred_kwh, 2), 'pred_usd': round(pred_usd, 2)},
         'hora_servidor': hora_servidor 
     })
+
+# --- NUEVA RUTA: TEST TELEGRAM ---
+@app.route('/api/test_telegram', methods=['POST'])
+def test_telegram():
+    exito = enviar_telegram("🔔 PRUEBA DE SISTEMA:\n¡Conexión exitosa con el Monitor de Energía!", forzar=True)
+    if exito: return jsonify({'status': 'ok'})
+    else: return jsonify({'status': 'error', 'msg': 'Fallo al enviar. Verifique Token/ChatID'})
+
+# --- NUEVA RUTA: DEBUG CÁMARA ---
+@app.route('/api/debug_camara')
+def debug_camara():
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened(): return jsonify({'status': 'error', 'msg': 'No hay cámara'})
+    cap.set(3, 640); cap.set(4, 480)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if not ret: return jsonify({'status': 'error', 'msg': 'Error captura'})
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    
+    txt = pytesseract.image_to_string(thresh, config=config_tesseract)
+    lectura = ''.join(filter(str.isdigit, txt))
+    
+    _, buffer = cv2.imencode('.jpg', thresh)
+    img_str = base64.b64encode(buffer).decode('utf-8')
+    
+    return jsonify({'status': 'ok', 'imagen': img_str, 'lectura_detectada': lectura if lectura else "Nada"})
 
 @app.route('/api/guardar_config', methods=['POST'])
 def guardar_config():
@@ -307,7 +334,8 @@ def api_control():
 if __name__ == '__main__':
     setup_gpio()
     sched = BackgroundScheduler()
-    sched.add_job(tarea_monitoreo, 'interval', minutes=1)
+    # VELOCIDAD AUMENTADA: Cada 15 segundos
+    sched.add_job(tarea_monitoreo, 'interval', seconds=15)
     sched.add_job(verificar_sistema, 'interval', minutes=1)
     sched.start()
     app.run(host='0.0.0.0', port=80, debug=False, use_reloader=False)

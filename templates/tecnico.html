@@ -17,7 +17,6 @@
         .list-group-item { background-color: transparent; color: white; border-color: #7f8c8d; }
         .nombre-editable:hover { text-decoration: underline; color: #3498db; cursor: pointer; }
         
-        /* Badges específicos */
         .badge-ciclo { background-color: #8e44ad; }
         .badge-horario { background-color: #16a085; }
     </style>
@@ -83,12 +82,37 @@
                     <input type="text" id="teleChat" class="form-control form-control-sm" placeholder="Ej: 987654321">
                 </div>
                 <div class="col-md-2">
-                    <button class="btn btn-info btn-sm w-100 fw-bold" onclick="guardarTelegram()">Guardar 💾</button>
+                    <div class="d-flex gap-1">
+                        <button class="btn btn-info btn-sm w-100 fw-bold" onclick="guardarTelegram()">💾</button>
+                        <button class="btn btn-warning btn-sm w-100 fw-bold" onclick="probarTelegram()">📨 Test</button>
+                    </div>
                 </div>
             </div>
             <small class="text-muted fst-italic mt-2 d-block">
                 * Busca <strong>@userinfobot</strong> en Telegram para obtener tu ID numérico.
             </small>
+        </div>
+    </div>
+
+    <div class="card mb-4 border border-warning">
+        <div class="card-header bg-transparent text-warning fw-bold border-bottom border-warning">
+            📷 Calibración de Sensor (Cámara)
+        </div>
+        <div class="card-body text-center">
+            <p class="text-muted small">Usa esto para enfocar la cámara. Verás la imagen en B/N tal como la procesa el sistema.</p>
+            
+            <div class="row justify-content-center">
+                <div class="col-md-6">
+                    <img id="imgDebug" src="" class="img-fluid border border-secondary rounded mb-3 d-none" style="max-height: 300px;">
+                    <div class="alert alert-dark d-flex justify-content-between align-items-center p-2">
+                        <span class="small text-muted">Lectura OCR:</span>
+                        <strong id="lecturaDebug" class="text-warning fs-5">--</strong>
+                    </div>
+                    <button class="btn btn-warning w-100 fw-bold text-dark" onclick="verCamara()" id="btnCam">
+                        📸 Tomar Foto de Prueba
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -177,7 +201,6 @@
 <script src="{{ url_for('static', filename='js/chart.min.js') }}"></script>
 
 <script>
-    // Configuración del Gráfico de LÍNEAS (Para técnico es mejor ver la curva)
     const ctx = document.getElementById('graficoEnergia').getContext('2d');
     const chart = new Chart(ctx, {
         type: 'line',
@@ -197,23 +220,19 @@
             relesGlobales = data.reles;
             gruposGlobales = data.grupos;
 
-            // Datos Generales
             document.getElementById('hora-sistema').innerText = data.hora_servidor;
             document.getElementById('prediccion-val').innerText = data.stats.pred_kwh.toFixed(2);
             document.getElementById('prediccion-costo').innerText = `$ ${data.stats.pred_usd.toFixed(2)}`;
 
-            // Cargar Config Telegram (Solo si no estamos escribiendo)
             if(document.activeElement.id !== 'teleToken' && document.activeElement.id !== 'teleChat') {
                 document.getElementById('teleToken').value = data.config.telegram_token || '';
                 document.getElementById('teleChat').value = data.config.telegram_chat_id || '';
             }
 
-            // Actualizar Gráfico
             chart.data.labels = data.grafico.map(x => x[0].split(' ')[1].substring(0,5));
             chart.data.datasets[0].data = data.grafico.map(x => x[1]);
             chart.update('none');
 
-            // --- Renderizar GRUPOS ---
             const divG = document.getElementById('contenedor-grupos');
             divG.innerHTML = '';
             data.grupos.forEach(g => {
@@ -247,7 +266,6 @@
                 </div>`;
             });
 
-            // --- Renderizar RELÉS ---
             const divR = document.getElementById('contenedor-reles');
             const listM = document.getElementById('lista-reles-modal');
             const modalAbierto = document.getElementById('modalGrupo').classList.contains('show');
@@ -256,7 +274,6 @@
             if (!modalAbierto) listM.innerHTML = '';
 
             data.reles.forEach(r => {
-                // Tarjeta
                 const estadoClass = r.estado ? 'border-success' : 'border-secondary';
                 const btnClass = r.estado ? 'btn-success' : 'btn-outline-secondary';
                 divR.innerHTML += `
@@ -273,7 +290,6 @@
                     </div>
                 </div>`;
 
-                // Modal Item
                 if (!modalAbierto) {
                     listM.innerHTML += `
                     <label class="list-group-item d-flex justify-content-between align-items-center">
@@ -286,7 +302,7 @@
         } catch (e) { console.error(e); }
     }
 
-    // --- FUNCIONES LÓGICAS ---
+    // --- FUNCIONES TELEGRAM Y CÁMARA ---
     async function guardarTelegram() {
         const t = document.getElementById('teleToken').value;
         const c = document.getElementById('teleChat').value;
@@ -297,6 +313,39 @@
         alert("✅ Configuración de Telegram guardada");
     }
 
+    // --- FUNCIÓN DE PRUEBA TELEGRAM ---
+    async function probarTelegram() {
+        const btn = event.target; 
+        btn.disabled = true;
+        try {
+            const res = await fetch('/api/test_telegram', {method: 'POST'});
+            const data = await res.json();
+            if(data.status === 'ok') alert("✅ Mensaje enviado con éxito");
+            else alert("❌ Error: " + data.msg);
+        } catch(e) { alert("Error de red"); }
+        btn.disabled = false;
+    }
+
+    async function verCamara() {
+        const btn = document.getElementById('btnCam');
+        const img = document.getElementById('imgDebug');
+        const txt = document.getElementById('lecturaDebug');
+        
+        btn.disabled = true; btn.innerText = "Capturando..."; txt.innerText = "Procesando...";
+        try {
+            const res = await fetch('/api/debug_camara');
+            const data = await res.json();
+            if(data.status === 'ok') {
+                img.src = "data:image/jpeg;base64," + data.imagen;
+                img.classList.remove('d-none');
+                txt.innerText = data.lectura_detectada;
+                txt.className = data.lectura_detectada !== "Nada" ? "text-success fs-4 fw-bold" : "text-danger fs-5";
+            } else alert("Error: " + data.msg);
+        } catch (e) { alert("Error cámara"); }
+        btn.disabled = false; btn.innerText = "📸 Tomar Foto de Prueba";
+    }
+
+    // --- FUNCIONES GRUPOS ---
     function toggleModos(modoActivo) {
         const chkH = document.getElementById('checkHorario');
         const chkC = document.getElementById('checkCiclo');
