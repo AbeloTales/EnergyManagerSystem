@@ -33,29 +33,17 @@ def setup_gpio():
     except: pass
     conn.close()
 
-# --- PROCESAMIENTO DE IMAGEN ---
+# --- PROCESAMIENTO DE IMAGEN (ALTO CONTRASTE) ---
 def procesar_imagen_ocr(frame):
-    # 1. Escala de Grises
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    # 2. Contraste
     contraste = cv2.convertScaleAbs(gray, alpha=1.5, beta=10)
-
-    # 3. Umbralización (FONDO NEGRO / LETRAS BLANCAS)
     thresh = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-
-    # 4. Limpieza (Erode suave)
     kernel = np.ones((3,3), np.uint8)
     procesada = cv2.erode(thresh, kernel, iterations=1) 
-    
-    # 5. Lectura
     txt = pytesseract.image_to_string(procesada, config=config_tesseract)
-    
-    # 6. Limpieza de texto
     clean = ''.join(filter(lambda x: x.isdigit() or x == '.', txt))
     if clean.count('.') > 1:
         clean = clean.replace('.', '', clean.count('.') - 1)
-        
     return procesada, clean
 
 # --- TELEGRAM ---
@@ -101,28 +89,35 @@ def verificar_sistema():
     now = datetime.now()
     hora_actual = now.strftime("%H:%M")
     
+    # 1. Obtener Configuración
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
     set_point = cfg['set_point_dinero']
     
-    # --- LOGICA MEJORADA DE PREDICCIÓN PARA ALERTAS ---
-    # Tomamos ultimos 10, filtramos picos y promediamos
-    c.execute("SELECT consumo_delta FROM lecturas ORDER BY id DESC LIMIT 10")
+    # 2. CALCULAR PREDICCIÓN (LÓGICA DEMO)
+    # Obtenemos los últimos 20 registros
+    c.execute("SELECT consumo_delta FROM lecturas ORDER BY id DESC LIMIT 20")
     raw_vals = [r[0] for r in c.fetchall()]
     
-    promedio_real = 0
-    if len(raw_vals) >= 5:
-        # Quitamos el valor mas alto (ruido o prueba)
-        vals_filtrados = sorted(raw_vals)[:-1] 
-        promedio_real = sum(vals_filtrados) / len(vals_filtrados)
+    promedio_demo = 0
     
-    prediccion_costo = (promedio_real * 43200) * COSTO_KWH # 43200 min en un mes
+    # Filtramos los saltos gigantes (> 100 kWh de golpe)
+    # Esto elimina el primer "delta" corrupto de la lectura inicial
+    vals_validos = [v for v in raw_vals if v < 100]
     
+    if len(vals_validos) > 0:
+        promedio_demo = sum(vals_validos) / len(vals_validos)
+    
+    # --- FÓRMULA DEMO ---
+    # Asumimos que cada lectura representa 1 DÍA en lugar de 15 segundos.
+    # Promedio * 30 días = Consumo Mensual Estimado
+    prediccion_costo = (promedio_demo * 30) * COSTO_KWH
+    
+    # Control de Alertas (Basado en la predicción DEMO)
     limitado_por_costo = False
-    # Solo alertar si ya tenemos datos estables (promedio > 0)
-    if promedio_real > 0 and prediccion_costo > set_point:
+    if promedio_demo > 0 and prediccion_costo > set_point:
         limitado_por_costo = True
-        enviar_telegram(f"⚠️ PRECAUCIÓN: Consumo proyectado (${prediccion_costo:.2f}) supera presupuesto. Apagando grupos no esenciales.")
+        enviar_telegram(f"⚠️ PRECAUCIÓN: Proyección mensual (${prediccion_costo:.2f}) supera su presupuesto. Activando ahorro de energía.")
         c.execute("SELECT id, pin_gpio FROM reles WHERE id_grupo IN (SELECT id FROM grupos WHERE prioridad=0)")
         for r in c.fetchall():
             c.execute("UPDATE reles SET estado=0 WHERE id=?", (r['id'],))
@@ -191,11 +186,11 @@ def tarea_monitoreo():
                     if val >= last[0]:
                         delta = val - last[0]
                     else:
-                        delta = 0.0 # Reinicio de medidor
+                        delta = 0.0 
                 else:
-                    delta = 0.0 # Primera lectura
+                    delta = 0.0
                 
-                # Guardamos TODO (>0) para tener historial, el filtro se hace al leer
+                # Guardamos TODO (>0) para que se vea en el gráfico
                 if val > 0: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
@@ -218,46 +213,29 @@ def api_datos():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # 1. Obtener datos para gráfico (últimos 30)
+    # 1. Datos del gráfico
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 30")
     grafico = [list(r) for r in c.fetchall()][::-1] 
     
-    # 2. LÓGICA INTELIGENTE DE PREDICCIÓN
-    # Obtenemos TODOS los deltas recientes para analizar
+    # 2. CALCULO DE PREDICCIÓN (MODO DEMO)
     raw_vals = [x[1] for x in grafico] 
     
     prom = 0
     pred_kwh = 0
     pred_usd = 0
     
-    # REGLA 1: Esperar al menos 5 lecturas para empezar a predecir
-    if len(raw_vals) >= 5:
-        # REGLA 2: Filtrar Outliers (Saltos gigantes de prueba)
-        # Ordenamos de menor a mayor
-        vals_ordenados = sorted(raw_vals)
+    # Paso A: Ignorar los deltas gigantes (> 100) que son errores de inicialización
+    vals_demo = [v for v in raw_vals if v < 100]
+    
+    if len(vals_demo) > 0:
+        prom = sum(vals_demo) / len(vals_demo)
         
-        # Eliminamos el 20% superior (los picos gigantes de prueba)
-        # y el 20% inferior (los ceros o errores)
-        recorte = int(len(vals_ordenados) * 0.2)
-        
-        # Si hay pocos datos, solo quitamos el más alto y el más bajo
-        if recorte == 0: 
-            vals_filtrados = vals_ordenados[:-1] # Quitamos solo el máximo
-        else:
-            vals_filtrados = vals_ordenados[recorte:-recorte]
-            
-        # Si nos quedamos sin datos (por filtrar todo), usamos el promedio crudo
-        if not vals_filtrados: vals_filtrados = raw_vals
-
-        # Calculamos promedio
-        prom = sum(vals_filtrados) / len(vals_filtrados)
-        
-        # Proyección Mensual
-        pred_kwh = prom * 43200
+        # Paso B: Asumir que 1 lectura = 1 DÍA (x30 días)
+        # Esto nos da valores realistas para la demostración
+        pred_kwh = prom * 30 
         pred_usd = pred_kwh * COSTO_KWH
     else:
-        # Si hay menos de 5 datos, devolvemos 0 para que la UI muestre "Calculando"
-        prom = 0 
+        prom = 0
 
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
@@ -301,9 +279,7 @@ def debug_camara():
     cap.set(3, 640); cap.set(4, 480)
     ret, frame = cap.read()
     cap.release()
-    
     if not ret: return jsonify({'status': 'error', 'msg': 'Error captura'})
-
     imagen_procesada, lectura = procesar_imagen_ocr(frame)
     _, buffer = cv2.imencode('.jpg', imagen_procesada)
     img_str = base64.b64encode(buffer).decode('utf-8')
