@@ -86,8 +86,10 @@ def verificar_sistema():
     c.execute("SELECT consumo_delta FROM lecturas ORDER BY id DESC LIMIT 20")
     raw_vals = [r[0] for r in c.fetchall()]
     
+    # Filtro Demo para predicción
     vals_validos = [v for v in raw_vals if v < 100]
     promedio_demo = sum(vals_validos) / len(vals_validos) if vals_validos else 0
+    # Formula Demo: 1 min = 1 día
     prediccion_costo = (promedio_demo * 30) * COSTO_KWH
     
     diferencia = set_point - prediccion_costo
@@ -116,7 +118,7 @@ def verificar_sistema():
         gid = g['id']
         nuevo_estado = None
         
-        # SI ES CRÍTICO Y BAJA PRIORIDAD, SE APAGA (Regla Estricta)
+        # SI ES CRÍTICO Y BAJA PRIORIDAD, SE APAGA
         if apagar_baja_prioridad and g['prioridad'] == 0:
             c.execute("UPDATE reles SET estado=0 WHERE id_grupo=?", (gid,))
             c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
@@ -156,16 +158,20 @@ def verificar_sistema():
     conn.commit()
     conn.close()
 
-# --- TAREA OCR ---
+# --- TAREA OCR (CON IMPRESIÓN EN CMD) ---
 def tarea_monitoreo():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened(): return
     cap.set(3, 640); cap.set(4, 480)
     ret, frame = cap.read()
     cap.release()
+    
     if ret:
+        print("\n--- 📸 Ciclo de Lectura ---")
         try:
             _, clean = procesar_imagen_ocr(frame)
+            print(f"👀 Texto detectado: '{clean}'")
+            
             if len(clean) > 0:
                 val = float(clean)
                 conn = sqlite3.connect(DB_NAME)
@@ -182,8 +188,16 @@ def tarea_monitoreo():
                 if val > 0: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
+                    print(f"✅ GUARDADO: {val} kWh | Delta: {delta:.4f}")
+                else:
+                    print(f"⚠️ Valor ignorado (<= 0): {val}")
+                
                 conn.close()
-        except Exception as e: print(f"Error monitor: {e}")
+            else:
+                print("⚠️ No se detectaron números claros.")
+                
+        except Exception as e: 
+            print(f"❌ Error monitor: {e}")
 
 # --- RUTAS ---
 @app.route('/')
@@ -202,10 +216,12 @@ def api_datos():
     
     raw_vals = [x[1] for x in grafico] 
     prom = 0
+    # Filtro Demo para predicción
     vals_demo = [v for v in raw_vals if v < 100]
     
     if len(vals_demo) > 0:
         prom = sum(vals_demo) / len(vals_demo)
+        # Formula Demo: 1 min = 1 día
         pred_kwh = prom * 30 
         pred_usd = pred_kwh * COSTO_KWH
     else:
@@ -229,14 +245,14 @@ def api_datos():
         'estado_alerta': ESTADO_ALERTA_ANTERIOR
     })
 
-# --- RUTA USUARIO REACTIVAR (MENSAJE CAMBIADO) ---
+# --- RUTA USUARIO REACTIVAR ---
 @app.route('/api/usuario_reactivar', methods=['POST'])
 def usuario_reactivar():
     data = request.json
     gid = int(data.get('id_grupo'))
     nombre_grupo = data.get('nombre')
     
-    # 1. Encendemos Físicamente YA
+    # 1. Encendemos Físicamente
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("UPDATE reles SET estado=1 WHERE id_grupo=?", (gid,))
@@ -246,9 +262,10 @@ def usuario_reactivar():
     conn.commit()
     conn.close()
     
-    # 2. Enviamos Alerta (TEXTO ACTUALIZADO)
+    # 2. Enviamos Alerta
     enviar_telegram(f"✅ Circuito '{nombre_grupo}' rehabilitado.\n⚠️ Por favor, modere el consumo en esta zona.", forzar=True)
     
+    print(f"🔓 USUARIO REACTIVÓ GRUPO: {nombre_grupo} (ID: {gid})") # Log en terminal también
     return jsonify({'status': 'ok'})
 
 # --- RESTO DE RUTAS ---
@@ -260,14 +277,20 @@ def reset_datos():
         c.execute("DELETE FROM lecturas") 
         conn.commit()
         conn.close()
+        print("🗑️ BASE DE DATOS RESETEADA")
         return jsonify({'status': 'ok'})
     except Exception as e: return jsonify({'status': 'error', 'msg': str(e)}), 500
 
 @app.route('/api/test_telegram', methods=['POST'])
 def test_telegram():
+    print("📨 Enviando test de Telegram...")
     exito = enviar_telegram("🔔 PRUEBA DE SISTEMA:\n¡Conexión exitosa con el Monitor de Energía!", forzar=True)
-    if exito: return jsonify({'status': 'ok'})
-    else: return jsonify({'status': 'error', 'msg': 'Fallo al enviar. Verifique Token/ChatID'})
+    if exito: 
+        print("✅ Telegram enviado OK")
+        return jsonify({'status': 'ok'})
+    else: 
+        print("❌ Fallo Telegram")
+        return jsonify({'status': 'error', 'msg': 'Fallo al enviar. Verifique Token/ChatID'})
 
 @app.route('/api/debug_camara')
 def debug_camara():
@@ -289,9 +312,11 @@ def guardar_config():
     c = conn.cursor()
     if 'set_point' in d:
         c.execute("UPDATE config SET set_point_dinero=? WHERE id=1", (d['set_point'],))
+        print(f"💾 Nuevo Set Point guardado: ${d['set_point']}")
     if 'telegram_token' in d:
         c.execute("UPDATE config SET telegram_token=?, telegram_chat_id=? WHERE id=1", 
                   (d['telegram_token'], d['telegram_chat_id']))
+        print("💾 Credenciales Telegram actualizadas")
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
