@@ -167,10 +167,10 @@ def tarea_monitoreo():
     cap.release()
     
     if ret:
-        print("\n--- 📸 Ciclo de Lectura ---")
+        print("\n--- Ciclo de Lectura ---")
         try:
             _, clean = procesar_imagen_ocr(frame)
-            print(f"👀 Texto detectado: '{clean}'")
+            print(f"Texto detectado: '{clean}'")
             
             if len(clean) > 0:
                 val = float(clean)
