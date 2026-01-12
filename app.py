@@ -15,8 +15,10 @@ app = Flask(__name__)
 # --- CONFIGURACIÓN ---
 DB_NAME = 'energia.db'
 COSTO_KWH = 0.10 
-# Configuración Tesseract (Solo números y puntos)
 config_tesseract = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
+
+# --- ESTADO DE ALERTAS ---
+ESTADO_ALERTA_ANTERIOR = "normal" 
 
 # --- GESTIÓN DE HARDWARE ---
 def setup_gpio():
@@ -33,7 +35,7 @@ def setup_gpio():
     except: pass
     conn.close()
 
-# --- PROCESAMIENTO DE IMAGEN (ALTO CONTRASTE) ---
+# --- PROCESAMIENTO DE IMAGEN ---
 def procesar_imagen_ocr(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     contraste = cv2.convertScaleAbs(gray, alpha=1.5, beta=10)
@@ -42,8 +44,7 @@ def procesar_imagen_ocr(frame):
     procesada = cv2.erode(thresh, kernel, iterations=1) 
     txt = pytesseract.image_to_string(procesada, config=config_tesseract)
     clean = ''.join(filter(lambda x: x.isdigit() or x == '.', txt))
-    if clean.count('.') > 1:
-        clean = clean.replace('.', '', clean.count('.') - 1)
+    if clean.count('.') > 1: clean = clean.replace('.', '', clean.count('.') - 1)
     return procesada, clean
 
 # --- TELEGRAM ---
@@ -56,80 +57,72 @@ def enviar_telegram(mensaje, forzar=False):
         cfg = c.fetchone()
         token = cfg['telegram_token']
         chat_id = cfg['telegram_chat_id']
-        last_alert = cfg['ultima_alerta']
         conn.close()
 
         if not token or not chat_id: return False
 
-        now = datetime.now()
-        if not forzar and last_alert:
-            last_time = datetime.strptime(last_alert, "%Y-%m-%d %H:%M:%S")
-            if (now - last_time).total_seconds() < 1800: return False
-
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": mensaje}
-        r = requests.post(url, json=payload)
-        
-        if not forzar and r.status_code == 200:
-            conn = sqlite3.connect(DB_NAME)
-            c = conn.cursor()
-            c.execute("UPDATE config SET ultima_alerta=? WHERE id=1", (now.strftime("%Y-%m-%d %H:%M:%S"),))
-            conn.commit()
-            conn.close()
-        return r.status_code == 200
+        requests.post(url, json=payload)
+        return True
     except Exception as e: 
         print(f"Error Telegram: {e}")
         return False
 
 # --- CEREBRO: CONTROL Y ALERTAS ---
 def verificar_sistema():
+    global ESTADO_ALERTA_ANTERIOR
+    
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     now = datetime.now()
     hora_actual = now.strftime("%H:%M")
     
-    # 1. Obtener Configuración
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
     set_point = cfg['set_point_dinero']
     
-    # 2. CALCULAR PREDICCIÓN (LÓGICA DEMO)
-    # Obtenemos los últimos 20 registros
     c.execute("SELECT consumo_delta FROM lecturas ORDER BY id DESC LIMIT 20")
     raw_vals = [r[0] for r in c.fetchall()]
     
-    promedio_demo = 0
-    
-    # Filtramos los saltos gigantes (> 100 kWh de golpe)
-    # Esto elimina el primer "delta" corrupto de la lectura inicial
     vals_validos = [v for v in raw_vals if v < 100]
-    
-    if len(vals_validos) > 0:
-        promedio_demo = sum(vals_validos) / len(vals_validos)
-    
-    # --- FÓRMULA DEMO ---
-    # Asumimos que cada lectura representa 1 DÍA en lugar de 15 segundos.
-    # Promedio * 30 días = Consumo Mensual Estimado
+    promedio_demo = sum(vals_validos) / len(vals_validos) if vals_validos else 0
     prediccion_costo = (promedio_demo * 30) * COSTO_KWH
     
-    # Control de Alertas (Basado en la predicción DEMO)
-    limitado_por_costo = False
-    if promedio_demo > 0 and prediccion_costo > set_point:
-        limitado_por_costo = True
-        enviar_telegram(f"⚠️ PRECAUCIÓN: Proyección mensual (${prediccion_costo:.2f}) supera su presupuesto. Activando ahorro de energía.")
-        c.execute("SELECT id, pin_gpio FROM reles WHERE id_grupo IN (SELECT id FROM grupos WHERE prioridad=0)")
-        for r in c.fetchall():
-            c.execute("UPDATE reles SET estado=0 WHERE id=?", (r['id'],))
-            GPIO.output(r['pin_gpio'], True)
+    diferencia = set_point - prediccion_costo
+    estado_actual = "normal"
+    
+    if promedio_demo > 0: 
+        if diferencia <= 0: estado_actual = "critico"
+        elif diferencia <= 30: estado_actual = "advertencia"
+        else: estado_actual = "normal"
+
+    if estado_actual != ESTADO_ALERTA_ANTERIOR:
+        if estado_actual == "advertencia":
+            enviar_telegram(f"⚠️ AVISO: Faltan solo ${diferencia:.2f} para tu límite.", forzar=True)
+        elif estado_actual == "critico":
+            enviar_telegram(f"🚨 LÍMITE EXCEDIDO: ${prediccion_costo:.2f}. Se apagarán zonas no esenciales.", forzar=True)
+        elif estado_actual == "normal" and ESTADO_ALERTA_ANTERIOR == "critico":
+            enviar_telegram("✅ CONSUMO NORMALIZADO.", forzar=True)
+        ESTADO_ALERTA_ANTERIOR = estado_actual
+
+    apagar_baja_prioridad = (estado_actual == "critico")
 
     c.execute("SELECT * FROM grupos")
     grupos = c.fetchall()
+    
     for g in grupos:
-        if limitado_por_costo and g['prioridad'] == 0: continue
         gid = g['id']
         nuevo_estado = None
         
+        # SI ES CRÍTICO Y BAJA PRIORIDAD, SE APAGA (Regla Estricta)
+        if apagar_baja_prioridad and g['prioridad'] == 0:
+            c.execute("UPDATE reles SET estado=0 WHERE id_grupo=?", (gid,))
+            c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
+            for r in c.fetchall(): GPIO.output(r[0], True) 
+            continue 
+
         if g['usar_horario'] == 1:
             ini, fin = g['hora_inicio'], g['hora_fin']
             encender = (ini <= hora_actual < fin) if ini < fin else (hora_actual >= ini or hora_actual < fin)
@@ -170,7 +163,6 @@ def tarea_monitoreo():
     cap.set(3, 640); cap.set(4, 480)
     ret, frame = cap.read()
     cap.release()
-    
     if ret:
         try:
             _, clean = procesar_imagen_ocr(frame)
@@ -183,22 +175,15 @@ def tarea_monitoreo():
                 
                 delta = 0.0
                 if last:
-                    if val >= last[0]:
-                        delta = val - last[0]
-                    else:
-                        delta = 0.0 
-                else:
-                    delta = 0.0
+                    if val >= last[0]: delta = val - last[0]
+                    else: delta = 0.0 
+                else: delta = 0.0
                 
-                # Guardamos TODO (>0) para que se vea en el gráfico
                 if val > 0: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
-                    print(f"✅ Dato: {val} (Delta: {delta})")
-                
                 conn.close()
-        except Exception as e:
-            print(f"Error monitor: {e}")
+        except Exception as e: print(f"Error monitor: {e}")
 
 # --- RUTAS ---
 @app.route('/')
@@ -212,30 +197,19 @@ def api_datos():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
-    # 1. Datos del gráfico
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 30")
     grafico = [list(r) for r in c.fetchall()][::-1] 
     
-    # 2. CALCULO DE PREDICCIÓN (MODO DEMO)
     raw_vals = [x[1] for x in grafico] 
-    
     prom = 0
-    pred_kwh = 0
-    pred_usd = 0
-    
-    # Paso A: Ignorar los deltas gigantes (> 100) que son errores de inicialización
     vals_demo = [v for v in raw_vals if v < 100]
     
     if len(vals_demo) > 0:
         prom = sum(vals_demo) / len(vals_demo)
-        
-        # Paso B: Asumir que 1 lectura = 1 DÍA (x30 días)
-        # Esto nos da valores realistas para la demostración
         pred_kwh = prom * 30 
         pred_usd = pred_kwh * COSTO_KWH
     else:
-        prom = 0
+        pred_kwh = 0; pred_usd = 0
 
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
@@ -251,9 +225,33 @@ def api_datos():
         'grafico': grafico, 'reles': reles, 'grupos': grupos,
         'config': dict(cfg),
         'stats': {'prom': round(prom, 2), 'pred_kwh': round(pred_kwh, 2), 'pred_usd': round(pred_usd, 2)},
-        'hora_servidor': hora_servidor 
+        'hora_servidor': hora_servidor,
+        'estado_alerta': ESTADO_ALERTA_ANTERIOR
     })
 
+# --- RUTA USUARIO REACTIVAR (MENSAJE CAMBIADO) ---
+@app.route('/api/usuario_reactivar', methods=['POST'])
+def usuario_reactivar():
+    data = request.json
+    gid = int(data.get('id_grupo'))
+    nombre_grupo = data.get('nombre')
+    
+    # 1. Encendemos Físicamente YA
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("UPDATE reles SET estado=1 WHERE id_grupo=?", (gid,))
+    c.execute("SELECT pin_gpio FROM reles WHERE id_grupo=?", (gid,))
+    for r in c.fetchall():
+        GPIO.output(r[0], False) 
+    conn.commit()
+    conn.close()
+    
+    # 2. Enviamos Alerta (TEXTO ACTUALIZADO)
+    enviar_telegram(f"✅ Circuito '{nombre_grupo}' rehabilitado.\n⚠️ Por favor, modere el consumo en esta zona.", forzar=True)
+    
+    return jsonify({'status': 'ok'})
+
+# --- RESTO DE RUTAS ---
 @app.route('/api/reset_datos', methods=['POST'])
 def reset_datos():
     try:
@@ -263,8 +261,7 @@ def reset_datos():
         conn.commit()
         conn.close()
         return jsonify({'status': 'ok'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'msg': str(e)}), 500
+    except Exception as e: return jsonify({'status': 'error', 'msg': str(e)}), 500
 
 @app.route('/api/test_telegram', methods=['POST'])
 def test_telegram():

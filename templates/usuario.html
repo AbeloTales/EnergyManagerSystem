@@ -11,6 +11,12 @@
         .card-prio:hover { transform: translateY(-3px); }
         .border-success { border-left-color: #28a745 !important; }
         .border-warning { border-left-color: #ffc107 !important; }
+        .btn-pulse { animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+        }
     </style>
 </head>
 <body>
@@ -67,7 +73,6 @@
 <script src="{{ url_for('static', filename='js/chart.min.js') }}"></script>
 
 <script>
-    // Configuración del Gráfico de BARRAS
     const ctx = document.getElementById('chartBarras').getContext('2d');
     const chart = new Chart(ctx, {
         type: 'bar',
@@ -94,52 +99,46 @@
             const res = await fetch('/api/datos');
             const data = await res.json();
             
-            // 1. Actualizar Set Point (Solo si el usuario no está escribiendo)
             if(document.activeElement.id !== 'inputSetPoint') {
                 document.getElementById('inputSetPoint').value = data.config.set_point_dinero;
             }
 
-            // 2. Actualizar Predicción y Estado
             const costo = data.stats.pred_usd;
-            const limite = data.config.set_point_dinero;
+            const alerta = data.estado_alerta; 
             
             document.getElementById('prediccion-usd').innerText = `$ ${costo.toFixed(2)}`;
-            
             const badge = document.getElementById('estado-presupuesto');
-            if(costo > limite) {
-                badge.className = 'badge bg-danger'; 
-                badge.innerText = "⚠️ Presupuesto Excedido";
+            
+            if (alerta === 'critico') {
+                badge.className = 'badge bg-danger'; badge.innerText = "🚨 Presupuesto Excedido - CORTE ACTIVO";
+            } else if (alerta === 'advertencia') {
+                badge.className = 'badge bg-warning text-dark'; badge.innerText = "⚠️ Cerca del límite";
             } else {
-                badge.className = 'badge bg-success'; 
-                badge.innerText = "✅ Dentro del límite";
+                badge.className = 'badge bg-success'; badge.innerText = "✅ Dentro del límite";
             }
 
-            // 3. Actualizar Gráfico de Barras
-            // Tomamos los últimos 15 datos para que se vea bien
             const datosGrafico = data.grafico.slice(0, 15);
-            chart.data.labels = datosGrafico.map(x => x[0].split(' ')[1].substring(0,5)); // Hora HH:MM
-            chart.data.datasets[0].data = datosGrafico.map(x => x[1]); // Valor Delta
+            chart.data.labels = datosGrafico.map(x => x[0].split(' ')[1].substring(0,5));
+            chart.data.datasets[0].data = datosGrafico.map(x => x[1]);
             chart.update('none');
 
-            // 4. Generar Tarjetas de Grupos (Solo Lectura)
             const div = document.getElementById('grid-grupos');
             div.innerHTML = '';
             
             data.grupos.forEach(g => {
-                if(g.id === 0) return; // Ignorar grupo default
+                if(g.id === 0) return; 
                 
                 const esPrioritario = g.prioridad === 1;
                 const claseBorde = esPrioritario ? 'border-success' : 'border-warning';
                 const textoBadge = esPrioritario ? 'Alta Prioridad (Esencial)' : 'Baja Prioridad (Apagable)';
                 const claseBadge = esPrioritario ? 'bg-success' : 'bg-warning text-dark';
                 
-                // Buscamos qué relés pertenecen a este grupo
                 const relesDelGrupo = data.reles.filter(r => r.id_grupo === g.id);
-                let listaHtml = '<ul class="list-group list-group-flush small mt-2">';
+                const todosApagados = relesDelGrupo.every(r => r.estado === 0);
                 
-                if (relesDelGrupo.length === 0) {
-                    listaHtml += '<li class="list-group-item text-muted fst-italic">Sin dispositivos</li>';
-                } else {
+                let listaHtml = '<ul class="list-group list-group-flush small mt-2">';
+                if (relesDelGrupo.length === 0) listaHtml += '<li class="list-group-item text-muted fst-italic">Sin dispositivos</li>';
+                else {
                     relesDelGrupo.forEach(r => {
                         const estadoIcon = r.estado ? '🟢' : '⚪';
                         listaHtml += `<li class="list-group-item bg-transparent px-0 py-1">${estadoIcon} ${r.nombre}</li>`;
@@ -147,13 +146,26 @@
                 }
                 listaHtml += '</ul>';
 
+                let btnRehabilitar = '';
+                // Botón aparece si: Estamos en CRITICO + Grupo es BAJA PRIORIDAD + Está APAGADO
+                if (alerta === 'critico' && !esPrioritario && todosApagados) {
+                    btnRehabilitar = `
+                    <div class="mt-3 border-top pt-2">
+                        <small class="text-danger d-block mb-1 fw-bold">⛔ Corte por Presupuesto</small>
+                        <button onclick="reactivarGrupo(${g.id}, '${g.nombre}')" class="btn btn-outline-danger btn-sm w-100 btn-pulse">
+                            🔓 Rehabilitar (Temporal)
+                        </button>
+                    </div>`;
+                }
+
                 div.innerHTML += `
                 <div class="col-md-4 mb-4">
                     <div class="card card-prio ${claseBorde} h-100 shadow-sm">
-                        <div class="card-body">
+                        <div class="card-body d-flex flex-column">
                             <h5 class="fw-bold mb-1">${g.nombre}</h5>
-                            <span class="badge ${claseBadge}">${textoBadge}</span>
+                            <div><span class="badge ${claseBadge}">${textoBadge}</span></div>
                             ${listaHtml}
+                            <div class="mt-auto">${btnRehabilitar}</div>
                         </div>
                     </div>
                 </div>`;
@@ -162,19 +174,30 @@
         } catch (e) { console.error(e); }
     }
 
+    async function reactivarGrupo(id, nombre) {
+        if(!confirm(`⚠️ ¿Deseas encender '${nombre}'?\n\nADVERTENCIA: Estás sobre el presupuesto. El sistema podría volver a apagarlo automáticamente en el próximo ciclo de revisión.`)) return;
+
+        await fetch('/api/usuario_reactivar', {
+            method: 'POST', 
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ id_grupo: id, nombre: nombre })
+        });
+        
+        alert("✅ Circuito Reactivado (Se envió notificación a Telegram).");
+        actualizar();
+    }
+
     async function guardarSetPoint() {
         const val = parseFloat(document.getElementById('inputSetPoint').value);
         if (isNaN(val) || val < 0) return alert("Ingrese un valor válido");
 
         await fetch('/api/guardar_config', {
-            method: 'POST', 
-            headers: {'Content-Type':'application/json'},
+            method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ set_point: val })
         });
-        actualizar(); // Refrescar visualmente
+        actualizar();
     }
 
-    // Bucle de actualización
     setInterval(actualizar, 2000);
     actualizar();
 </script>
