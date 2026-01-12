@@ -15,10 +15,7 @@ app = Flask(__name__)
 # --- CONFIGURACIÓN ---
 DB_NAME = 'energia.db'
 COSTO_KWH = 0.10 
-
-# --- MEJORA CRÍTICA OCR: WHITELIST ---
-# Le decimos a Tesseract: "Solo busca números y puntos, ignora letras basura"
-# --psm 7: Tratar la imagen como una única línea de texto.
+# Mantenemos el filtro de solo números, ayuda mucho
 config_tesseract = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
 
 # --- GESTIÓN DE HARDWARE ---
@@ -36,49 +33,41 @@ def setup_gpio():
     except: pass
     conn.close()
 
-# --- PROCESAMIENTO DE IMAGEN (OPTIMIZADO PARA NEGRO SOBRE BLANCO) ---
+# --- PROCESAMIENTO DE IMAGEN (VERSION ALTO CONTRASTE) ---
 def procesar_imagen_ocr(frame):
     """
-    Rutina mejorada para leer pantallas digitales (Fondo Claro, Letras Oscuras)
+    Versión 'Fondo Negro / Letras Blancas' (OTSU Invertido)
+    Genera una imagen más limpia visualmente.
     """
     # 1. Escala de Grises
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # 2. Suavizado Gaussiano (Vital para pantallas para quitar el pixelado)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # 3. Umbral Adaptativo (Adaptive Threshold)
-    # En lugar de un corte fijo, calcula el umbral por zonas. 
-    # Es perfecto para pantallas con brillo desigual.
-    # cv2.THRESH_BINARY: Mantiene el fondo BLANCO y letras NEGRAS.
-    thresh = cv2.adaptiveThreshold(
-        blurred, 
-        255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 
-        11, # Tamaño del bloque de vecindad
-        2   # Constante a restar
-    )
+    # 2. Aumentar Contraste (Hacer el blanco más brillante)
+    contraste = cv2.convertScaleAbs(gray, alpha=1.5, beta=10)
 
-    # 4. Limpieza de Ruido (Morfología)
-    # Como tenemos letras negras sobre fondo blanco, usamos ERODE.
-    # Erode en fondo blanco "come" el blanco y hace el negro más grueso.
+    # 3. Umbralización OTSU INVERTIDA
+    # Convierte todo a BLANCO (texto) y NEGRO (fondo).
+    # Genera bloques sólidos, eliminando el ruido del 'Adaptive Threshold'.
+    thresh = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
+    # 4. Limpieza (Morfología)
+    # En imagen invertida (letras blancas), 'dilate' engrosa la letra.
+    # 'erode' la hace más fina. Usamos un kernel suave.
     kernel = np.ones((3,3), np.uint8)
-    procesada = cv2.erode(thresh, kernel, iterations=1)
     
-    # --- PASO EXTRA DE SEGURIDAD ---
-    # Tesseract prefiere bordes nítidos. A veces un pequeño desenfoque final ayuda.
-    procesada = cv2.medianBlur(procesada, 3)
-
+    # Truco: Si las letras salen muy pegadas, usa erode. Si salen muy finas, usa dilate.
+    # Volvemos al erode suave que tenías antes que te gustaba.
+    procesada = cv2.erode(thresh, kernel, iterations=1) 
+    
     # 5. Lectura
     txt = pytesseract.image_to_string(procesada, config=config_tesseract)
     
-    # Limpieza final del string (solo digitos y un solo punto decimal)
+    # Limpieza de caracteres no numéricos
     clean = ''.join(filter(lambda x: x.isdigit() or x == '.', txt))
     
-    # Corregir errores comunes (ej: dos puntos ".." -> ".")
+    # Corrección de puntos dobles (ej: 12..5 -> 12.5)
     if clean.count('.') > 1:
-        clean = clean.replace('.', '', clean.count('.') - 1) # Dejar solo el ultimo
+        clean = clean.replace('.', '', clean.count('.') - 1)
         
     return procesada, clean
 
@@ -197,7 +186,6 @@ def tarea_monitoreo():
     if ret:
         try:
             _, clean = procesar_imagen_ocr(frame)
-            
             if len(clean) > 0:
                 val = float(clean)
                 conn = sqlite3.connect(DB_NAME)
@@ -209,7 +197,6 @@ def tarea_monitoreo():
                 if last and val >= last[0]:
                     delta = val - last[0]
                 
-                # Filtro: Descartar saltos gigantescos (ruido) o valores 0 puros
                 if val > 0 and delta < 200: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
@@ -266,6 +253,7 @@ def debug_camara():
     
     if not ret: return jsonify({'status': 'error', 'msg': 'Error captura'})
 
+    # Usamos la versión de alto contraste
     imagen_procesada, lectura = procesar_imagen_ocr(frame)
     
     _, buffer = cv2.imencode('.jpg', imagen_procesada)
