@@ -162,7 +162,7 @@ def verificar_sistema():
     conn.commit()
     conn.close()
 
-# --- TAREA OCR (CORREGIDA PARA ACEPTAR SALTOS GRANDES) ---
+# --- TAREA OCR (SIN FILTROS - ACEPTA TODO) ---
 def tarea_monitoreo():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened(): return
@@ -182,25 +182,18 @@ def tarea_monitoreo():
                 
                 delta = 0.0
                 if last:
-                    # Si la lectura nueva es mayor o igual, calculamos delta
                     if val >= last[0]:
                         delta = val - last[0]
                     else:
-                        # Si es menor (ej: reset de medidor), asumimos delta 0 para reiniciar
+                        # Si el nuevo valor es menor, asumimos reinicio del medidor
                         delta = 0.0
-                else:
-                    # Si es la PRIMERA lectura de la historia, delta es 0
-                    delta = 0.0
                 
-                # --- CAMBIO CRÍTICO AQUI ---
-                # Aumentamos el límite de 200 a 5000 para permitir pruebas manuales
-                # Si delta es 0 (primera vez o igual) TAMBIÉN entra.
-                if val > 0 and delta < 5000: 
+                # --- FILTRO ELIMINADO ---
+                # Ahora guarda CUALQUIER valor mayor a 0, sin importar cuan grande sea el salto
+                if val > 0: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
-                    print(f"Lectura guardada: {val} (Delta: {delta})")
-                else:
-                    print(f"Lectura ignorada por salto excesivo: {val} (Delta: {delta})")
+                    print(f"✅ Dato guardado: {val} (Salto: {delta})")
                 
                 conn.close()
         except Exception as e:
@@ -221,7 +214,6 @@ def api_datos():
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 30")
     grafico = [list(r) for r in c.fetchall()][::-1] 
     
-    # Manejo de listas vacías para evitar errores
     if grafico:
         vals = [x[1] for x in grafico[-10:]]
         prom = sum(vals)/len(vals) if len(vals) > 0 else 0
