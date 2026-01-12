@@ -105,22 +105,28 @@ def verificar_sistema():
     cfg = c.fetchone()
     set_point = cfg['set_point_dinero']
     
+    # --- LOGICA MEJORADA DE PREDICCIÓN PARA ALERTAS ---
+    # Tomamos ultimos 10, filtramos picos y promediamos
     c.execute("SELECT consumo_delta FROM lecturas ORDER BY id DESC LIMIT 10")
-    vals = [r[0] for r in c.fetchall()]
-    promedio = sum(vals)/len(vals) if vals else 0
-    prediccion_costo = (promedio * 43200) * COSTO_KWH
+    raw_vals = [r[0] for r in c.fetchall()]
+    
+    promedio_real = 0
+    if len(raw_vals) >= 5:
+        # Quitamos el valor mas alto (ruido o prueba)
+        vals_filtrados = sorted(raw_vals)[:-1] 
+        promedio_real = sum(vals_filtrados) / len(vals_filtrados)
+    
+    prediccion_costo = (promedio_real * 43200) * COSTO_KWH # 43200 min en un mes
     
     limitado_por_costo = False
-    if prediccion_costo > set_point:
+    # Solo alertar si ya tenemos datos estables (promedio > 0)
+    if promedio_real > 0 and prediccion_costo > set_point:
         limitado_por_costo = True
         enviar_telegram(f"⚠️ PRECAUCIÓN: Consumo proyectado (${prediccion_costo:.2f}) supera presupuesto. Apagando grupos no esenciales.")
         c.execute("SELECT id, pin_gpio FROM reles WHERE id_grupo IN (SELECT id FROM grupos WHERE prioridad=0)")
         for r in c.fetchall():
             c.execute("UPDATE reles SET estado=0 WHERE id=?", (r['id'],))
             GPIO.output(r['pin_gpio'], True)
-
-    if promedio > 0 and vals and vals[0] < (promedio * 0.1): 
-        enviar_telegram("⚠️ ALERTA: Consumo inusualmente bajo detectado.")
 
     c.execute("SELECT * FROM grupos")
     grupos = c.fetchall()
@@ -162,7 +168,7 @@ def verificar_sistema():
     conn.commit()
     conn.close()
 
-# --- TAREA OCR (SIN FILTROS - ACEPTA TODO) ---
+# --- TAREA OCR ---
 def tarea_monitoreo():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened(): return
@@ -185,15 +191,15 @@ def tarea_monitoreo():
                     if val >= last[0]:
                         delta = val - last[0]
                     else:
-                        # Si el nuevo valor es menor, asumimos reinicio del medidor
-                        delta = 0.0
+                        delta = 0.0 # Reinicio de medidor
+                else:
+                    delta = 0.0 # Primera lectura
                 
-                # --- FILTRO ELIMINADO ---
-                # Ahora guarda CUALQUIER valor mayor a 0, sin importar cuan grande sea el salto
+                # Guardamos TODO (>0) para tener historial, el filtro se hace al leer
                 if val > 0: 
                     c.execute("INSERT INTO lecturas (valor_kwh, consumo_delta) VALUES (?, ?)", (val, delta))
                     conn.commit()
-                    print(f"✅ Dato guardado: {val} (Salto: {delta})")
+                    print(f"✅ Dato: {val} (Delta: {delta})")
                 
                 conn.close()
         except Exception as e:
@@ -211,19 +217,48 @@ def api_datos():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+    
+    # 1. Obtener datos para gráfico (últimos 30)
     c.execute("SELECT fecha, consumo_delta FROM lecturas ORDER BY id DESC LIMIT 30")
     grafico = [list(r) for r in c.fetchall()][::-1] 
     
-    if grafico:
-        vals = [x[1] for x in grafico[-10:]]
-        prom = sum(vals)/len(vals) if len(vals) > 0 else 0
-    else:
-        vals = []
-        prom = 0
-
-    pred_kwh = prom * 43200
-    pred_usd = pred_kwh * COSTO_KWH
+    # 2. LÓGICA INTELIGENTE DE PREDICCIÓN
+    # Obtenemos TODOS los deltas recientes para analizar
+    raw_vals = [x[1] for x in grafico] 
     
+    prom = 0
+    pred_kwh = 0
+    pred_usd = 0
+    
+    # REGLA 1: Esperar al menos 5 lecturas para empezar a predecir
+    if len(raw_vals) >= 5:
+        # REGLA 2: Filtrar Outliers (Saltos gigantes de prueba)
+        # Ordenamos de menor a mayor
+        vals_ordenados = sorted(raw_vals)
+        
+        # Eliminamos el 20% superior (los picos gigantes de prueba)
+        # y el 20% inferior (los ceros o errores)
+        recorte = int(len(vals_ordenados) * 0.2)
+        
+        # Si hay pocos datos, solo quitamos el más alto y el más bajo
+        if recorte == 0: 
+            vals_filtrados = vals_ordenados[:-1] # Quitamos solo el máximo
+        else:
+            vals_filtrados = vals_ordenados[recorte:-recorte]
+            
+        # Si nos quedamos sin datos (por filtrar todo), usamos el promedio crudo
+        if not vals_filtrados: vals_filtrados = raw_vals
+
+        # Calculamos promedio
+        prom = sum(vals_filtrados) / len(vals_filtrados)
+        
+        # Proyección Mensual
+        pred_kwh = prom * 43200
+        pred_usd = pred_kwh * COSTO_KWH
+    else:
+        # Si hay menos de 5 datos, devolvemos 0 para que la UI muestre "Calculando"
+        prom = 0 
+
     c.execute("SELECT * FROM config WHERE id=1")
     cfg = c.fetchone()
     c.execute("SELECT * FROM reles")
